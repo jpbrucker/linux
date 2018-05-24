@@ -147,6 +147,47 @@ struct vhost_vdpa_iova_range {
 	__u64 last;
 };
 
+/*
+ * Supports different modes:
+ *
+ * - Register the endpoint, with optional flags
+ *   VHOST_IOMMU_SET_PROBE_BUFFER, VHOST_IOMMU_ADD_FD
+ *
+ * - Update the endpoint, with one of:
+ *   VHOST_IOMMU_SET_PROBE_BUFFER: set or clear the probe_buffer.
+ *   VHOST_IOMMU_ADD_FD: add a file descriptor.
+ *   VHOST_IOMMU_DEL_FD: remove a file descriptor.
+ *
+ * - Unregister the endpoint with flag VHOST_IOMMU_UNREGISTER_ENDPOINT
+ *   All file descriptors are removed.
+ *
+ * @fd is valid if flags contains VHOST_IOMMU_ADD_FD or VHOST_IOMMU_DEL_FD. The
+ * file descriptor must be a vhost-net file descriptor. Multiple vhost-net files
+ * may be connected to the endpoint, one for each queue pair.
+ *
+ * @probe_size and @probe_buffer are valid if flags contains
+ * VHOST_IOMMU_SET_PROBE_BUFFER. @probe_buffer is a userspace pointer to a
+ * buffer copied into the PROBE requests from the guest for this endpoint.  The
+ * buffer size is @probe_size bytes. Since the buffer is copied, the memory
+ * pointed to by @probe_buffer can be freed after the ioctl completes.
+ */
+struct vhost_iommu_register_endpoint {
+	/* Endpoint ID used in requests */
+	__u32		id;
+
+#define VHOST_IOMMU_UNREGISTER_ENDPOINT	(1 << 0)
+#define VHOST_IOMMU_ADD_FD		(1 << 1)
+#define VHOST_IOMMU_DEL_FD		(1 << 2)
+#define VHOST_IOMMU_SET_PROBE_BUFFER	(1 << 3)
+	__u32		flags;
+
+	__s32		fd;
+
+	/* Size of the probe buffer */
+	__u32		probe_size;
+	__u64		probe_buffer;
+};
+
 /* Feature bits */
 /* Log all write descriptors. Can be changed while device is active. */
 #define VHOST_F_LOG_ALL 26

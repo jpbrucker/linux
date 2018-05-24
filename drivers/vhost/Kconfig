@@ -74,6 +74,18 @@ config VHOST_VDPA
 	  To compile this driver as a module, choose M here: the module
 	  will be called vhost_vdpa.
 
+config VHOST_IOMMU
+	tristate "vhost virtio-iommu driver"
+	depends on EVENTFD
+	select VHOST
+	help
+	  This kernel module can be loaded in host kernel to accelerate guest
+	  IOVA translation with virtio-iommu. Not to be confused with
+	  virtio-iommu module itself which needs to be loaded in guest kernel.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called vhost_iommu.
+
 config VHOST_CROSS_ENDIAN_LEGACY
 	bool "Cross-endian support for vhost"
 	default n
