@@ -562,6 +562,12 @@ config TPS6594_PFSM
 	  This driver can also be built as a module.  If so, the module
 	  will be called tps6594-pfsm.
 
+config SMMU_TEST_ENGINE
+	bool "SMMU Test Engine (for FastModels)"
+	default y # Not for upstream!
+	help
+	  PCI driver for SMMU TestEngine.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"
