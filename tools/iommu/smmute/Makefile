@@ -21,6 +21,7 @@ MULTI		:= $(OUTPUT)smmute-multi
 TEST_VFIO	:= $(OUTPUT)test-vfio
 TEST_FAULT	:= $(OUTPUT)smmute-fault
 TEST_REPLAY	:= $(OUTPUT)test-vfio-replay
+TEST_BIND	:= $(OUTPUT)smmute-bind
 DRIVERS		:= driver-kernel.o driver-vfio.o
 
 ALL		+= $(SMMUTE)
@@ -28,12 +29,14 @@ ALL		+= $(MULTI)
 ALL		+= $(TEST_VFIO)
 ALL		+= $(TEST_FAULT)
 ALL		+= $(TEST_REPLAY)
+ALL		+= $(TEST_BIND)
 
 OBJS		+= main.o lib.o
 OBJS		+= multi.o
 OBJS		+= test-vfio.o
 OBJS		+= smmute-fault.o
 OBJS		+= vfio-replay.o
+OBJS		+= smmute-bind.o
 OBJS		+= $(DRIVERS)
 OBJS		:= $(addprefix $(OUTPUT),$(OBJS))
 comma		= ,
@@ -61,6 +64,9 @@ $(TEST_FAULT): $(addprefix $(OUTPUT),smmute-fault.o lib.o $(DRIVERS))
 	$(CC) -o $@ $^ $(LIB_LDFLAGS)
 
 $(TEST_REPLAY): $(addprefix $(OUTPUT),vfio-replay.o lib.o $(DRIVERS))
+	$(CC) -o $@ $^ $(LIB_LDFLAGS)
+
+$(TEST_BIND): $(addprefix $(OUTPUT),smmute-bind.o lib.o $(DRIVERS))
 	$(CC) -o $@ $^ $(LIB_LDFLAGS)
 
 clean:
