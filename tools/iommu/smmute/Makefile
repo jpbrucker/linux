@@ -17,11 +17,14 @@ CFLAGS		+= -pthread
 LIB_LDFLAGS	+= -pthread -lrt
 
 SMMUTE		:= $(OUTPUT)smmute
-DRIVERS		:= driver-kernel.o
+SERVER		:= $(OUTPUT)smmuted
+DRIVERS		:= driver-kernel.o driver-vfio.o driver-ipc.o
 
 ALL		+= $(SMMUTE)
+ALL		+= $(SERVER)
 
 OBJS		+= main.o lib.o
+OBJS		+= ipc-server.o
 OBJS		+= $(DRIVERS)
 OBJS		:= $(addprefix $(OUTPUT),$(OBJS))
 comma		= ,
@@ -37,6 +40,9 @@ $(OUTPUT)%.o: $(SRC)%.c
 	$(CC) $(CFLAGS) $(DEPS_FLAGS) -c -o $@ $<
 
 $(SMMUTE): $(addprefix $(OUTPUT),main.o lib.o $(DRIVERS))
+	$(CC) -o $@ $^ $(LIB_LDFLAGS)
+
+$(SERVER): $(addprefix $(OUTPUT),ipc-server.o lib.o $(DRIVERS))
 	$(CC) -o $@ $^ $(LIB_LDFLAGS)
 
 clean:

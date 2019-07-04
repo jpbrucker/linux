@@ -5,9 +5,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <sys/types.h>
+
 #include <linux/smmu-test-engine.h>
 
 #define PAGE_SIZE		sysconf(_SC_PAGE_SIZE)
+
+#define ALIGN(x, a)		__ALIGN_MASK(x,(typeof(x))(a)-1)
+#define __ALIGN_MASK(x, mask)	(((x)+(mask))&~(mask))
+#define PAGE_ALIGN(x)		ALIGN(x, PAGE_SIZE)
 
 #ifndef dma_addr_t
 #define dma_addr_t		unsigned long long
@@ -71,6 +77,7 @@ extern enum loglevel loglevel;
 struct smmute_mem_options {
 	/* UNIFIED_MEM* flags */
 	unsigned long			unified;
+	int				pasid;
 
 	/* mmap parameters */
 	char				*in_file_path;
@@ -106,6 +113,9 @@ struct smmute_backend_options {
 	int				flags;
 };
 
+/* Put multiple devices in the same container when possible */
+#define SMMUTE_BACKEND_VFIO_FLAG_MERGE			(1 << 0)
+
 struct smmute_dev;
 
 struct smmute_device_ops {
@@ -115,8 +125,8 @@ struct smmute_device_ops {
 	int (*open)(struct smmute_dev *, const char *path, int flags);
 	void (*close)(struct smmute_dev *);
 
-	int (*bind)(struct smmute_dev *);
-	int (*unbind)(struct smmute_dev *);
+	int (*bind)(struct smmute_dev *, pid_t pid, int *pasid);
+	int (*unbind)(struct smmute_dev *, pid_t pid, int pasid);
 
 	void *(*alloc_buffer)(struct smmute_dev *, size_t size, int prot,
 			      struct smmute_mem_options *opts);
@@ -150,18 +160,21 @@ void smmute_backend_exit(enum smmute_backend);
 int smmute_device_open(struct smmute_dev *, const char *path, int flags);
 void smmute_device_close(struct smmute_dev *);
 
-static inline int smmute_bind(struct smmute_dev *dev)
+static inline int smmute_bind(struct smmute_dev *dev, int pid, int *pasid)
 {
+	if (!pasid)
+		return EINVAL;
+
 	if (dev->ops && dev->ops->bind)
-		return dev->ops->bind(dev);
+		return dev->ops->bind(dev, pid, pasid);
 
 	return ENODEV;
 }
 
-static inline int smmute_unbind(struct smmute_dev *dev)
+static inline int smmute_unbind(struct smmute_dev *dev, pid_t pid, int pasid)
 {
 	if (dev->ops && dev->ops->unbind)
-		return dev->ops->unbind(dev);
+		return dev->ops->unbind(dev, pid, pasid);
 
 	return ENODEV;
 }

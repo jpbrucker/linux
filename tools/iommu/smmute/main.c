@@ -578,7 +578,7 @@ static int do_transaction(struct smmute_dev *dev, struct program_options *opts)
 	memset(&params, 0, sizeof(params));
 
 	if (opts->mem.unified) {
-		ret = smmute_bind(dev);
+		ret = smmute_bind(dev, getpid(), &opts->mem.pasid);
 		if (ret) {
 			pr_err("cannot bind task: %s\n", strerror(ret));
 			return ret;
@@ -614,6 +614,7 @@ static int do_transaction(struct smmute_dev *dev, struct program_options *opts)
 	params.common.stride	= 1;
 	params.common.seed	= opts->seed;
 	params.common.attr	= SMMUTE_TRANSACTION_ATTR(attr, attr);
+	params.common.pasid	= opts->mem.pasid;
 
 	if (opts->mem.unified)
 		params.common.flags |= SMMUTE_FLAG_SVA;
@@ -688,7 +689,7 @@ static int do_transaction(struct smmute_dev *dev, struct program_options *opts)
 			pr_info("Critical: access succeeded after unmap!\n");
 	} else if (!ret && opts->fault & INJECT_FAULT_PASID && opts->mem.unified) {
 		do_unbind = false;
-		ret = smmute_unbind(dev);
+		ret = smmute_unbind(dev, getpid(), opts->mem.pasid);
 		if (ret) {
 			pr_err("cannot unbind task: %s\n", strerror(ret));
 			goto out_unmap;
@@ -716,7 +717,7 @@ out_unmap:
 	smmute_destroy_buffer(dev, in_buf_va, in_buf_iova, in_size, opts);
 
 	if (do_unbind) {
-		int ret2 = smmute_unbind(dev);
+		int ret2 = smmute_unbind(dev, getpid(), opts->mem.pasid);
 		if (ret2) {
 			pr_err("cannot unbind task: %s\n", strerror(ret2));
 			ret |= 2;
@@ -1008,6 +1009,7 @@ int main(int argc, char *argv[])
 
 		.mem = {
 			.unified		= 0,
+			.pasid			= 0,
 			.in_file_path		= NULL,
 			.out_file_path		= NULL,
 			.in_file		= -1,

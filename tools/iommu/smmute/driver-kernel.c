@@ -33,24 +33,28 @@ static int smmute_kernel_get_result(struct smmute_dev *dev,
 	return 0;
 }
 
-static int smmute_kernel_bind(struct smmute_dev *dev)
+static int smmute_kernel_bind(struct smmute_dev *dev, pid_t pid, int *pasid)
 {
 	struct smmute_kdev *kdev = to_kdev(dev);
 	struct smmute_bind_param param = {
-		.pid = -1,
+		.pid = pid,
 	};
 
 	if (ioctl(kdev->fd, SMMUTE_IOCTL_BIND_TASK, &param))
 		return errno;
 
+	/* Caller doesn't need the PASID unless it's doing kernel validation. */
+	*pasid = param.pasid;
+
 	return 0;
 }
 
-static int smmute_kernel_unbind(struct smmute_dev *dev)
+static int smmute_kernel_unbind(struct smmute_dev *dev, pid_t pid, int pasid)
 {
 	struct smmute_kdev *kdev = to_kdev(dev);
 	struct smmute_bind_param param = {
-		.pid = -1,
+		.pid	= pid,
+		.pasid	= pasid,
 	};
 
 	if (ioctl(kdev->fd, SMMUTE_IOCTL_UNBIND_TASK, &param))
