@@ -699,8 +699,9 @@ int iommu_aux_attach_device(struct iommu_domain *domain, struct device *dev);
 void iommu_aux_detach_device(struct iommu_domain *domain, struct device *dev);
 int iommu_aux_get_pasid(struct iommu_domain *domain, struct device *dev);
 
-struct iommu_sva *iommu_sva_bind_device(struct device *dev,
-					unsigned int flags);
+struct iommu_sva *iommu_sva_bind_device(struct device *dev, unsigned int flags);
+struct iommu_sva *iommu_sva_bind_group(struct iommu_group *group,
+				       unsigned int flags);
 void iommu_sva_unbind_device(struct iommu_sva *handle);
 u32 iommu_sva_get_pasid(struct iommu_sva *handle);
 
@@ -1114,6 +1115,12 @@ int iommu_attach_pasid_table(struct iommu_domain *domain,
 
 static inline
 void iommu_detach_pasid_table(struct iommu_domain *domain) {}
+
+static inline struct iommu_sva *
+iommu_sva_bind_group(struct iommu_group *group, unsigned int flags)
+{
+	return NULL;
+}
 
 #endif /* CONFIG_IOMMU_API */
 
