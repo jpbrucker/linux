@@ -58,6 +58,7 @@ static void print_help(char *progname)
 "                    * stack - using alloca                                \n"
 "                   <flags> may be one of                                  \n"
 "                    * lock - mlock mmap'd buffers (no major write fault)  \n"
+"                    * hugetlb - try to allocate huge pages                \n"
 "                    * in_file=<file> - file-backed mmap for input buffers \n"
 "                    * out_file=<file> - ditto, for output buffers         \n",
 	progname, progname, progname);
@@ -822,6 +823,8 @@ static int parse_unified_option(struct smmute_mem_options *opts)
 			opts->unified |= UNIFIED_MEM_ADV_DNEED;
 		} else if (flag_equals("madv_willneed")) {
 			opts->unified |= UNIFIED_MEM_ADV_WNEED;
+		} else if (flag_equals("hugetlb")) {
+			opts->unified |= UNIFIED_MEM_HUGE;
 		} else if (flag_equals("in_file=")) {
 			if (opts->in_file_path) {
 				pr_err("duplicate in_file flag\n");

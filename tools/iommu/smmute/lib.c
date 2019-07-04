@@ -29,6 +29,9 @@ void *smmute_lib_alloc_buffer(int fd, size_t size, int prot,
 		/* Let the driver create an (anonymous) mapping */
 		flags = MAP_SHARED;
 
+	if (opts->unified & UNIFIED_MEM_HUGE)
+		flags |= MAP_HUGETLB;
+
 	if (opts->unified & UNIFIED_MEM_MALLOC) {
 		buf = malloc(size);
 		if (!buf) {

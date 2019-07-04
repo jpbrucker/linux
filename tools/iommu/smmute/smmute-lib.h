@@ -69,6 +69,7 @@ extern enum loglevel loglevel;
 #define UNIFIED_MEM_ADV_SEQ	0x1000
 #define UNIFIED_MEM_ADV_WNEED	0x2000
 #define UNIFIED_MEM_ADV_DNEED	0x4000
+#define UNIFIED_MEM_HUGE	0x8000
 
 #define UNIFIED_MEM_FLAGS_MASK	0x7f00
 
