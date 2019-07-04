@@ -1,14 +1,14 @@
 include ../scripts/Makefile.include
 
-all: thp-tests
+all: smmute thp-tests
 
-thp-tests: thp-tests FORCE
+smmute thp-tests: thp-tests FORCE
 	$(call descend,$@)
 
-thp-tests_clean: FORCE
+smmute_clean thp-tests_clean: FORCE
 	$(call descend,$(@:_clean=),clean)
 
-clean: thp-tests_clean FORCE
+clean: smmute_clean thp-tests_clean FORCE
 
 FORCE:
 
