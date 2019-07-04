@@ -17,7 +17,7 @@ CFLAGS		+= -pthread
 LIB_LDFLAGS	+= -pthread -lrt
 
 SMMUTE		:= $(OUTPUT)smmute
-DRIVERS		:= driver-kernel.o
+DRIVERS		:= driver-kernel.o driver-vfio.o
 
 ALL		+= $(SMMUTE)
 

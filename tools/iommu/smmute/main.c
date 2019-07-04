@@ -21,9 +21,10 @@ static void print_help(char *progname)
 {
 	pr_err(
 "Usage: %s [opts] [/dev/smmuteX]                                           \n"
+"       %s [opts] -bv /sys/devices/.../nnnn:bb:dd.f/                     \n\n"
 "Control the SMMU test engine driver                                     \n\n"
 "  OPTION           DESCRIPTION                                     DEFAULT\n"
-"  -b <backend>     backend (driver): k[ernel]                       kernel\n"
+"  -b <backend>     backend (driver): k[ernel], v[fio]               kernel\n"
 "  -c               check buffer values                                    \n"
 "  -d               debug - print additional messages                      \n"
 "  -f <mode>        fault - inject a fault                                 \n"
@@ -59,7 +60,7 @@ static void print_help(char *progname)
 "                    * lock - mlock mmap'd buffers (no major write fault)  \n"
 "                    * in_file=<file> - file-backed mmap for input buffers \n"
 "                    * out_file=<file> - ditto, for output buffers         \n",
-	progname);
+	progname, progname);
 }
 
 static const char *optstring = "b:cdf:g:k:m:n:o:qr:s:t:u:h";
@@ -577,7 +578,7 @@ static int do_transaction(struct smmute_dev *dev, struct program_options *opts)
 	memset(&params, 0, sizeof(params));
 
 	if (opts->mem.unified) {
-		ret = smmute_bind(dev);
+		ret = smmute_bind(dev, &opts->mem.pasid);
 		if (ret) {
 			pr_err("cannot bind task: %s\n", strerror(ret));
 			return ret;
@@ -613,6 +614,7 @@ static int do_transaction(struct smmute_dev *dev, struct program_options *opts)
 	params.common.stride	= 1;
 	params.common.seed	= opts->seed;
 	params.common.attr	= SMMUTE_TRANSACTION_ATTR(attr, attr);
+	params.common.pasid	= opts->mem.pasid;
 
 	if (opts->mem.unified)
 		params.common.flags |= SMMUTE_FLAG_SVA;
@@ -687,7 +689,7 @@ static int do_transaction(struct smmute_dev *dev, struct program_options *opts)
 			pr_info("Critical: access succeeded after unmap!\n");
 	} else if (!ret && opts->fault & INJECT_FAULT_PASID && opts->mem.unified) {
 		do_unbind = false;
-		ret = smmute_unbind(dev);
+		ret = smmute_unbind(dev, opts->mem.pasid);
 		if (ret) {
 			pr_err("cannot unbind task: %s\n", strerror(ret));
 			goto out_unmap;
@@ -715,7 +717,7 @@ out_unmap:
 	smmute_destroy_buffer(dev, in_buf_va, in_buf_iova, in_size, opts);
 
 	if (do_unbind) {
-		int ret2 = smmute_unbind(dev);
+		int ret2 = smmute_unbind(dev, opts->mem.pasid);
 		if (ret2) {
 			pr_err("cannot unbind task: %s\n", strerror(ret2));
 			ret |= 2;
@@ -888,6 +890,8 @@ static int parse_options(int argc, char *argv[], struct program_options *opts)
 		case 'b':
 			if (optarg[0] == 'k') {
 				opts->backend = SMMUTE_BACKEND_KERNEL;
+			} else if (optarg[0] == 'v') {
+				opts->backend = SMMUTE_BACKEND_VFIO;
 			} else {
 				pr_err("unkown backend '%s'\n", optarg);
 				return 1;
@@ -1050,6 +1054,7 @@ int main(int argc, char *argv[])
 
 		.mem = {
 			.unified		= 0,
+			.pasid			= 0,
 			.in_file_path		= NULL,
 			.out_file_path		= NULL,
 			.in_file		= -1,

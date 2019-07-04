@@ -33,17 +33,18 @@ static int smmute_kernel_get_result(struct smmute_dev *dev,
 	return 0;
 }
 
-static int smmute_kernel_bind(struct smmute_dev *dev)
+static int smmute_kernel_bind(struct smmute_dev *dev, int *pasid)
 {
 	struct smmute_kdev *kdev = to_kdev(dev);
 
 	if (ioctl(kdev->fd, SMMUTE_IOCTL_BIND_TASK))
 		return errno;
 
+	*pasid = 0;
 	return 0;
 }
 
-static int smmute_kernel_unbind(struct smmute_dev *dev)
+static int smmute_kernel_unbind(struct smmute_dev *dev, int pasid)
 {
 	struct smmute_kdev *kdev = to_kdev(dev);
 
