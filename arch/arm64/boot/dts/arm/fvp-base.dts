@@ -197,6 +197,31 @@
 		msi-parent = <&its 0x10000>;
 	};
 
+	smmute@2b500000 {
+		/*
+		 * When the model has
+		 * pci.dma330x4.use_smmuv3testengine_not_dmacs=1
+		 * There is a SMMU test engine at 0x2b500000
+		 */
+		compatible = "arm,smmute";
+		reg = <0x0 0x2b500000 0x0 0x100000>;
+
+		dma-coherent;
+		dma-can-stall;
+		pasid-num-bits = <20>;
+
+		/*
+		 * Note that it seems that the device can issue transaction to
+		 * an arbitrary number of SIDs (set in privileged frame). Just
+		 * add them to both lists and ensure that they don't clash with
+		 * the PCI iommu-map.
+		 */
+		iommus = <&smmu 0x40>,
+			 <&smmu 0x41>;
+		msi-parent = <&its 0x40>,
+		             <&its 0x41>;
+        };
+
 	bus@8000000 {
 		compatible = "simple-bus";
 
