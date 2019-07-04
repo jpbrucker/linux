@@ -18,13 +18,16 @@ LIB_LDFLAGS	+= -pthread -lrt
 
 SMMUTE		:= $(OUTPUT)smmute
 MULTI		:= $(OUTPUT)smmute-multi
+TEST_VFIO	:= $(OUTPUT)test-vfio
 DRIVERS		:= driver-kernel.o driver-vfio.o
 
 ALL		+= $(SMMUTE)
 ALL		+= $(MULTI)
+ALL		+= $(TEST_VFIO)
 
 OBJS		+= main.o lib.o
 OBJS		+= multi.o
+OBJS		+= test-vfio.o
 OBJS		+= $(DRIVERS)
 OBJS		:= $(addprefix $(OUTPUT),$(OBJS))
 comma		= ,
@@ -43,6 +46,9 @@ $(SMMUTE): $(addprefix $(OUTPUT),main.o lib.o $(DRIVERS))
 	$(CC) -o $@ $^ $(LIB_LDFLAGS)
 
 $(MULTI): $(addprefix $(OUTPUT),multi.o lib.o $(DRIVERS))
+	$(CC) -o $@ $^ $(LIB_LDFLAGS)
+
+$(TEST_VFIO): $(addprefix $(OUTPUT),test-vfio.o lib.o $(DRIVERS))
 	$(CC) -o $@ $^ $(LIB_LDFLAGS)
 
 clean:
