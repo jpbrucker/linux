@@ -19,6 +19,7 @@
 #include <linux/irq.h>
 #include <linux/kobject.h>
 #include <linux/miscdevice.h>
+#include <linux/mman.h>
 #include <linux/module.h>
 #include <linux/msi.h>
 #include <linux/pagemap.h>
@@ -29,6 +30,7 @@
 #include <linux/ptrace.h>
 #include <linux/rbtree.h>
 #include <linux/sched/mm.h>
+#include <linux/sched/task.h>
 #include <linux/uaccess.h>
 
 #include <linux/smmu-test-engine.h>
@@ -425,6 +427,8 @@ static struct smmute_task *__smmute_task_get(struct smmute_file_desc *fd,
 	smmute_task->pid	= pid;
 	smmute_task->ssid	= iommu_sva_get_pasid(smmute_task->handle);
 	smmute_task->kobj.kset	= smmute->tasks_set;
+	INIT_LIST_HEAD(&smmute_task->msi_mappings);
+	spin_lock_init(&smmute_task->msi_mappings_lock);
 
 	ret = smmute_task_fd_get(fd, smmute_task);
 	if (ret)
@@ -529,6 +533,7 @@ void smmute_task_put(struct smmute_file_desc *fd,
 
 void smmute_task_release(struct kobject *kobj)
 {
+	struct smmute_dma *dma, *tmp;
 	struct smmute_task *smmute_task = container_of(kobj, struct smmute_task, kobj);
 	struct smmute_device *smmute = smmute_task->smmute;
 
@@ -537,6 +542,17 @@ void smmute_task_release(struct kobject *kobj)
 	list_del(&smmute_task->smmute_head);
 
 	iommu_sva_unbind_device(smmute_task->handle);
+
+	list_for_each_entry_safe(dma, tmp, &smmute_task->msi_mappings, list) {
+		/*
+		 * We may be called by do_exit(), at which point the mm is
+		 * already gone.
+		 */
+		if (current->mm)
+			vm_munmap(dma->iova & PAGE_MASK, PAGE_SIZE);
+		list_del(&dma->list);
+		smmute_dma_put(dma);
+	}
 
 	trace_smmute_free_task(smmute_task);
 	kfree(smmute_task);
@@ -610,7 +626,8 @@ static void smmute_dma_release(struct kobject *kobj)
 	if (dma->task)
 		smmute_task_put(dma->fd, dma->task, __func__);
 
-	dma_free_attrs(smmute->dev, dma->size, dma->kaddr, dma->iova, 0);
+	if (!dma->is_msi)
+		dma_free_attrs(smmute->dev, dma->size, dma->kaddr, dma->iova, 0);
 
 	kmem_cache_free(smmute->dma_regions_cache, dma);
 }
@@ -732,6 +749,93 @@ void smmute_fd_release(struct kobject *kobj)
 	kmem_cache_free(smmute->file_desc_cache, fd);
 }
 
+static int smmute_map_msi_into_task(struct smmute_device *smmute,
+				    struct smmute_file_desc *fd,
+				    struct smmute_task *smmute_task,
+				    u64 addr, u64 *new_addr)
+{
+	struct mm_struct *mm = current->mm;
+	struct device *dev = smmute->dev;
+	struct iommu_domain *domain;
+	struct vm_area_struct *vma;
+	struct smmute_dma *dma;
+	size_t size = PAGE_SIZE;
+	unsigned long unused;
+	phys_addr_t phys;
+	int ret = -EFAULT;
+	u64 iova;
+
+	domain = iommu_get_domain_for_dev(dev);
+	if (!domain)
+		return -EINVAL;
+
+	spin_lock(&smmute_task->msi_mappings_lock);
+	list_for_each_entry(dma, &smmute_task->msi_mappings, list) {
+		if ((u64)dma->kaddr == addr) {
+			*new_addr = dma->iova;
+			spin_unlock(&smmute_task->msi_mappings_lock);
+			return 0;
+		}
+	}
+	spin_unlock(&smmute_task->msi_mappings_lock);
+
+	phys = iommu_iova_to_phys(domain, addr);
+	if (!phys) {
+		dev_err(dev, "no mapping for MSI %llx\n", addr);
+		return -EFAULT;
+	}
+
+	mmap_write_lock(mm);
+	iova = do_mmap(NULL, 0, size, PROT_WRITE, MAP_SHARED, 0, 0,
+		       &unused, NULL);
+	if (IS_ERR_VALUE(iova)) {
+		ret = iova ? (long)iova : -EINVAL;
+		mmap_write_unlock(mm);
+		dev_err(dev, "Cannot mmap\n");
+		return ret;
+	}
+
+	vma = find_vma(mm, iova);
+	if (!vma) {
+		do_munmap(mm, iova, size, NULL);
+		mmap_write_unlock(mm);
+		dev_err(dev, "the VMA we just created does not exist.\n");
+		return -ENODEV;
+	}
+
+	vma->vm_page_prot = pgprot_device(vma->vm_page_prot);
+	ret = remap_pfn_range(vma, iova, phys >> PAGE_SHIFT, size,
+			      vma->vm_page_prot);
+	mmap_write_unlock(mm);
+
+	if (ret) {
+		dev_err(dev, "cannot remap PFN\n");
+		goto err_unmap;
+	}
+
+	dma = smmute_dma_alloc_struct(fd);
+	if (!dma) {
+		ret = -ENOMEM;
+		goto err_unmap;
+	}
+
+	dma->is_msi = true;
+	dma->iova = *new_addr = iova | (addr & ~PAGE_MASK);
+	dma->kaddr = (void *)addr;
+	dma->size = size;
+
+	spin_lock(&smmute_task->msi_mappings_lock);
+	list_add(&dma->list, &smmute_task->msi_mappings);
+	spin_unlock(&smmute_task->msi_mappings_lock);
+
+	dev_warn_once(dev, "mapped MSI into userspace at %#llx\n", *new_addr);
+	return 0;
+
+err_unmap:
+	vm_munmap(iova, size);
+	return ret;
+}
+
 /**
  * smmute_user_frame_init - Initialise a user frame
  *
@@ -782,9 +886,34 @@ smmute_user_frame_init(struct smmute_device *smmute,
 		writel_relaxed(transaction->msi, &frame->msidata);
 		writel_relaxed(0, &frame->msiattr);
 	} else {
+		int ret;
+		struct smmute_task *smmute_task;
 		struct smmute_msi_info *entry =
 			&smmute->plat_msi_entries[transaction->msi];
-		writeq_relaxed(entry->doorbell, &frame->msiaddress);
+		struct pid *pid = get_task_pid(current, PIDTYPE_TGID);
+		u64 new_addr = entry->doorbell;
+
+		/*
+		 * Urgh, the device issues MSIs tagged with SSID. So map the MSI
+		 * into the process adress space, and try to look inconspicuous.
+		 * This would *NOT* be ok if it wasn't exclusively for a
+		 * software model. Create a mapping into current address space.
+		 */
+		mutex_lock(&smmute->task_mutex);
+		list_for_each_entry(smmute_task, &smmute->tasks, smmute_head) {
+			if (smmute_task->pid != pid)
+				continue;
+
+			ret = smmute_map_msi_into_task(smmute, transaction->fd,
+						       smmute_task, entry->doorbell,
+						       &new_addr);
+			if (ret)
+				pr_err("Could not remap MSI. Will fault.\n");
+		}
+		mutex_unlock(&smmute->task_mutex);
+		put_pid(pid);
+
+		writeq_relaxed(new_addr, &frame->msiaddress);
 		writel_relaxed(entry->data, &frame->msidata);
 		writel_relaxed(SMMUTE_ATTR_DEVICE, &frame->msiattr);
 	}
