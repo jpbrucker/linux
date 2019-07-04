@@ -472,6 +472,12 @@ config SMMU_TEST_ENGINE
 	help
 	  PCI driver for SMMU TestEngine.
 
+config SMMU_TEST_ENGINE_SELFTEST
+	bool "SMMU Test Engine self tests"
+	default y # Not for upstream!
+	help
+	  Light tests for the test engine
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"
