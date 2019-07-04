@@ -1,8 +1,14 @@
 include ../scripts/Makefile.include
 
-all:
+all: thp-tests
 
-clean: FORCE
+thp-tests: thp-tests FORCE
+	$(call descend,$@)
+
+thp-tests_clean: FORCE
+	$(call descend,$(@:_clean=),clean)
+
+clean: thp-tests_clean FORCE
 
 FORCE:
 
