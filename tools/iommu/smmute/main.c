@@ -727,20 +727,6 @@ out_unmap:
 	return ret;
 }
 
-/* parse_long(const char *optarg, unsigned/signed long *dest) */
-#define _parse_long(optarg, dest, fn)				\
-({								\
-	errno = 0;						\
-	char *__endptr = (optarg);				\
-	*(dest) = fn((optarg), &__endptr, 0);			\
-	if (errno || __endptr == (optarg))			\
-		pr_err("invalid number '%s'\n", (optarg));	\
-	errno || __endptr == (optarg);				\
-})
-
-#define parse_ul(optarg, dest) _parse_long(optarg, dest, strtoul)
-#define parse_sl(optarg, dest) _parse_long(optarg, dest, strtol)
-
 static int parse_fault_option(struct program_options *opts)
 {
 	if (!optarg || opts->fault)

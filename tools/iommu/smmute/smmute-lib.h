@@ -74,6 +74,20 @@ extern enum loglevel loglevel;
 
 #define	UNIFIED_MEM_MODE(v) ((v) & UNIFIED_MEM_MODE_MASK)
 
+/* parse_long(const char *optarg, unsigned/signed long *dest) */
+#define _parse_long(optarg, dest, fn)				\
+({								\
+	errno = 0;						\
+	char *__endptr = (optarg);				\
+	*(dest) = fn((optarg), &__endptr, 0);			\
+	if (errno || __endptr == (optarg))			\
+		pr_err("invalid number '%s'\n", (optarg));	\
+	errno || __endptr == (optarg);				\
+})
+
+#define parse_ul(optarg, dest) _parse_long(optarg, dest, strtoul)
+#define parse_sl(optarg, dest) _parse_long(optarg, dest, strtol)
+
 struct smmute_mem_options {
 	/* UNIFIED_MEM* flags */
 	unsigned long			unified;
