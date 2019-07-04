@@ -19,6 +19,7 @@ LIB_LDFLAGS	+= -pthread -lrt
 SMMUTE		:= $(OUTPUT)smmute
 MULTI		:= $(OUTPUT)smmute-multi
 TEST_VFIO	:= $(OUTPUT)test-vfio
+TEST_FAULT	:= $(OUTPUT)smmute-fault
 SERVER		:= $(OUTPUT)smmuted
 DRIVERS		:= driver-kernel.o driver-vfio.o driver-ipc.o
 
@@ -26,11 +27,13 @@ ALL		+= $(SMMUTE)
 ALL		+= $(MULTI)
 ALL		+= $(SERVER)
 ALL		+= $(TEST_VFIO)
+ALL		+= $(TEST_FAULT)
 
 OBJS		+= main.o lib.o
 OBJS		+= ipc-server.o
 OBJS		+= multi.o
 OBJS		+= test-vfio.o
+OBJS		+= smmute-fault.o
 OBJS		+= $(DRIVERS)
 OBJS		:= $(addprefix $(OUTPUT),$(OBJS))
 comma		= ,
@@ -55,6 +58,9 @@ $(MULTI): $(addprefix $(OUTPUT),multi.o lib.o $(DRIVERS))
 	$(CC) -o $@ $^ $(LIB_LDFLAGS)
 
 $(TEST_VFIO): $(addprefix $(OUTPUT),test-vfio.o lib.o $(DRIVERS))
+	$(CC) -o $@ $^ $(LIB_LDFLAGS)
+
+$(TEST_FAULT): $(addprefix $(OUTPUT),smmute-fault.o lib.o $(DRIVERS))
 	$(CC) -o $@ $^ $(LIB_LDFLAGS)
 
 clean:
