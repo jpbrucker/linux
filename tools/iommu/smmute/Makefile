@@ -24,6 +24,7 @@ TEST_REPLAY	:= $(OUTPUT)test-vfio-replay
 TEST_BIND	:= $(OUTPUT)smmute-bind
 THP_TESTS	= $(OUTPUT)../thp-tests/thp-tests.a
 TEST_HUGE	:= $(OUTPUT)smmute-huge
+TEST_OOM	:= $(OUTPUT)smmute-oom
 DRIVERS		:= driver-kernel.o driver-vfio.o
 
 ALL		+= $(SMMUTE)
@@ -33,6 +34,7 @@ ALL		+= $(TEST_FAULT)
 ALL		+= $(TEST_REPLAY)
 ALL		+= $(TEST_BIND)
 ALL		+= $(TEST_HUGE)
+ALL		+= $(TEST_OOM)
 
 OBJS		+= main.o lib.o
 OBJS		+= multi.o
@@ -41,6 +43,7 @@ OBJS		+= smmute-fault.o
 OBJS		+= vfio-replay.o
 OBJS		+= smmute-bind.o
 OBJS		+= smmute-huge.o
+OBJS		+= smmute-oom.o
 OBJS		+= $(DRIVERS)
 OBJS		:= $(addprefix $(OUTPUT),$(OBJS))
 comma		= ,
@@ -74,6 +77,9 @@ $(TEST_BIND): $(addprefix $(OUTPUT),smmute-bind.o lib.o $(DRIVERS))
 	$(CC) -o $@ $^ $(LIB_LDFLAGS)
 
 $(TEST_HUGE): $(addprefix $(OUTPUT),smmute-huge.o lib.o $(DRIVERS)) $(THP_TESTS)
+	$(CC) -o $@ $^ $(LIB_LDFLAGS)
+
+$(TEST_OOM): $(addprefix $(OUTPUT),smmute-oom.o lib.o $(DRIVERS))
 	$(CC) -o $@ $^ $(LIB_LDFLAGS)
 
 clean:
