@@ -36,6 +36,7 @@
 #include <linux/hugetlb.h>
 #include <linux/page_idle.h>
 #include <linux/local_lock.h>
+#include <linux/syscalls.h>
 
 #include "internal.h"
 
@@ -844,6 +845,12 @@ void lru_add_drain_all(void)
 	lru_add_drain();
 }
 #endif /* CONFIG_SMP */
+
+SYSCALL_DEFINE1(lru_sync, unsigned long, flags)
+{
+	lru_add_drain_all();
+	return 0;
+}
 
 /**
  * release_pages - batched put_page()

@@ -1014,6 +1014,8 @@ asmlinkage long sys_pidfd_send_signal(int pidfd, int sig,
 				       unsigned int flags);
 asmlinkage long sys_pidfd_getfd(int pidfd, int fd, unsigned int flags);
 
+asmlinkage long sys_lru_sync(unsigned long flags);
+
 /*
  * Architecture-specific system calls
  */
