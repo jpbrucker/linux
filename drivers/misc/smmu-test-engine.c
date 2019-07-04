@@ -17,6 +17,7 @@
 #include <linux/fs.h>
 #include <linux/interrupt.h>
 #include <linux/iommu.h>
+#include <linux/iova.h>
 #include <linux/irq.h>
 #include <linux/kobject.h>
 #include <linux/miscdevice.h>
@@ -1797,6 +1798,417 @@ static void smmute_free_msi_pool(struct smmute_device *smmute)
 			 &smmute->msi_pools[i]);
 }
 
+#ifdef CONFIG_SMMU_TEST_ENGINE_SELFTEST
+struct smmute_selftest {
+	int seed;
+
+	unsigned long iova_in;
+	unsigned long iova_out;
+	void *va_in;
+	void *va_out;
+	size_t size;
+	int ssid;
+};
+
+static int smmute_run_selftest_memcpy(struct smmute_device *smmute,
+				      struct smmute_selftest *test,
+				      bool expect_fail)
+{
+	int i;
+	u32 cmd;
+	char *buf;
+	long frame;
+	int sid = 0;
+	int ret = 0;
+	ktime_t timeout;
+	int ssid = test->ssid;
+	struct smmute_uframe *uframe;
+	struct smmute_pframe *pframe;
+	int attr = SMMUTE_ATTR_WBRAWA_SH;
+	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(smmute->dev);
+
+	/* No locking needed here, we're still in probe() */
+	frame = smmute_frame_alloc(smmute);
+	if (frame < 0)
+		return frame;
+
+	uframe = smmute_user_frame(smmute->pairs, frame);
+	pframe = smmute_privileged_frame(smmute->pairs, frame);
+
+	if (fwspec && fwspec->num_ids)
+		sid = fwspec->ids[0];
+
+	writel_relaxed(0, &pframe->pctrl);
+	writel_relaxed(0, &pframe->downstream_port_index);
+	writel_relaxed(sid, &pframe->streamid); /* Ignored for PCI */
+	writel_relaxed(ssid ? ssid : SMMUTE_NO_SUBSTREAMID, &pframe->substreamid);
+
+	writel_relaxed(ENGINE_HALTED, &uframe->cmd);
+	writel_relaxed(0, &uframe->uctrl);
+	writeq_relaxed(test->iova_in, &uframe->begin);
+	writeq_relaxed(test->iova_in + test->size - 1, &uframe->end_incl);
+	writel_relaxed(SMMUTE_TRANSACTION_ATTR(attr, attr),
+		       &uframe->attributes);
+	writel_relaxed(0, &uframe->seed);
+	writeq_relaxed(1, &uframe->stride);
+
+	writeq_relaxed(0, &uframe->msiaddress);
+	writel_relaxed(0, &uframe->msidata);
+	writel_relaxed(0, &uframe->msiattr);
+
+	writeq_relaxed(test->iova_out, uframe->udata);
+	for (i = 1; i < 8; i++)
+		writeq_relaxed(0, uframe->udata + i);
+
+	buf = test->va_in;
+	for (i = 0; i < test->size && buf; i++)
+		buf[i] = i + test->seed;
+
+	timeout = ktime_add_us(ktime_get(), 1000000);
+	/* writel() orders our writes to buf against issuing the command */
+	writel(ENGINE_MEMCPY, &uframe->cmd);
+	/* readl() orders read of cmd against subsequent reads from buf */
+	while (((cmd = readl(&uframe->cmd)) == ENGINE_MEMCPY) &&
+	       ktime_before(ktime_get(), timeout)) {
+		/* With PREEMPT_NONE, let the fault handler run */
+		cond_resched();
+		cpu_relax();
+	}
+
+	if (cmd == ENGINE_MEMCPY)
+		dev_warn(smmute->dev, "timeout\n");
+	if (cmd != ENGINE_HALTED)
+		ret = -EFAULT;
+
+	buf = test->va_out;
+	for (i = 0; !ret && i < test->size && buf; i++) {
+		if ((char)(i + test->seed) != buf[i])
+			ret = -EIO;
+	}
+
+	clear_bit(frame, smmute->reserved_frames);
+
+	if (ret && expect_fail) {
+		ret = 0;
+	} else if (ret) {
+		dev_err(smmute->dev, "MEMCPY failed, status is %s\n",
+			smmute_get_command_name(cmd));
+	} else if (expect_fail) {
+		dev_err(smmute->dev,
+			"transaction that was expected to fail succeeded\n");
+		ret = -ESTALE;
+	}
+
+	return ret;
+}
+
+static int smmute_run_simple_selftest(struct smmute_device *smmute,
+				      struct smmute_selftest *test,
+				      bool tlb_test)
+{
+	int ret;
+	void *addr_in, *addr_out;
+	dma_addr_t dma_addr_in, dma_addr_out;
+
+	addr_in = dma_alloc_coherent(smmute->dev, test->size, &dma_addr_in,
+				     GFP_KERNEL);
+	if (!addr_in)
+		return -ENOMEM;
+
+	addr_out = dma_alloc_coherent(smmute->dev, test->size, &dma_addr_out,
+				      GFP_KERNEL);
+	if (!addr_out) {
+		ret = -ENOMEM;
+		goto out_free;
+	}
+
+	test->iova_in	= dma_addr_in;
+	test->iova_out	= dma_addr_out;
+	test->va_in	= addr_in;
+	test->va_out	= addr_out;
+
+	ret = smmute_run_selftest_memcpy(smmute, test, false);
+	if (ret || !tlb_test)
+		goto out_free;
+
+	/* Now retry the test with unmapped data */
+	dma_free_coherent(smmute->dev, test->size, addr_out, dma_addr_out);
+	test->va_out = addr_out = NULL;
+
+	/*
+	 * The SMMU driver will report event 0x10, which look scary. Inform the
+	 * unsuspecting user that this is normal. If the fault happens during
+	 * ATS translation request, no event is recorded.
+	 * TODO: register a temporary fault handler
+	 */
+	if (!dev_is_pci(smmute->dev) || !to_pci_dev(smmute->dev)->ats_enabled)
+		dev_info(smmute->dev, "the following SMMU events are expected!\n");
+	ret = smmute_run_selftest_memcpy(smmute, test, true);
+	if (ret)
+		goto out_free;
+
+	/* Remap and retry */
+	addr_out = dma_alloc_coherent(smmute->dev, test->size, &dma_addr_out,
+				      GFP_KERNEL);
+	if (!addr_out) {
+		ret = -ENOMEM;
+		goto out_free;
+	}
+	test->va_out	= addr_out;
+	test->iova_out	= dma_addr_out;
+
+	ret = smmute_run_selftest_memcpy(smmute, test, false);
+	if (ret)
+		goto out_free;
+
+	dma_free_coherent(smmute->dev, test->size, addr_in, dma_addr_in);
+	test->va_in = addr_in = NULL;
+
+	ret = smmute_run_selftest_memcpy(smmute, test, true);
+	if (ret)
+		goto out_free;
+
+	addr_in = dma_alloc_coherent(smmute->dev, test->size, &dma_addr_in,
+				     GFP_KERNEL);
+	if (!addr_in) {
+		ret = -ENOMEM;
+		goto out_free;
+	}
+	test->va_in	= addr_in;
+	test->iova_in	= dma_addr_in;
+
+	ret = smmute_run_selftest_memcpy(smmute, test, false);
+
+out_free:
+	if (addr_in)
+		dma_free_coherent(smmute->dev, test->size, addr_in, dma_addr_in);
+	if (addr_out)
+		dma_free_coherent(smmute->dev, test->size, addr_out, dma_addr_out);
+	return ret;
+}
+
+static int smmute_run_selftest(struct smmute_device *smmute,
+			       struct smmute_selftest *test)
+{
+	struct device *dev = smmute->dev;
+	unsigned long dma_mask = DMA_BIT_MASK(32) >> PAGE_SHIFT;
+	unsigned long resv_iova = 0;
+	struct iommu_domain *domain;
+	struct iova_domain *iovad;
+	unsigned long iova;
+	struct page *page;
+	int ret = 0;
+
+	if (!smmute->dev_feat[IOMMU_DEV_FEAT_AUX]) {
+		dev_warn_once(dev, "ignoring PASID test\n");
+		return 0;
+	}
+
+	iovad = kzalloc(sizeof(*iovad), GFP_KERNEL);
+	if (!iovad)
+		return -ENOMEM;
+	init_iova_domain(iovad, PAGE_SIZE, 1);
+
+	domain = iommu_domain_alloc(dev->bus);
+	if (!domain || domain->type != IOMMU_DOMAIN_UNMANAGED) {
+		dev_warn(dev, "cannot alloc domain\n");
+		goto free_iovad;
+	}
+
+	ret = iommu_aux_attach_device(domain, dev);
+	if (ret) {
+		dev_warn(dev, "couldn't attach AUX domain (%d)\n", ret);
+		goto free_domain;
+	}
+
+	/* Get two pages */
+	page = alloc_pages(GFP_KERNEL, 1);
+	if (!page) {
+		dev_err(dev, "cannot alloc page\n");
+		ret = -ENOMEM;
+		goto detach_device;
+	}
+
+	/*
+	 * HACK: for the no-PASID context, first IOVAs are used by the DMA
+	 * domain for MSIs
+	 */
+	resv_iova = alloc_iova_fast(iovad, 1, dma_mask, true);
+
+	iova = alloc_iova_fast(iovad, 2, dma_mask, true);
+	if (!iova) {
+		dev_err(dev, "cannot alloc iova\n");
+		ret = -ENOMEM;
+		goto free_pages;
+	}
+	iova <<= PAGE_SHIFT;
+
+	/* Map something, launch transaction */
+	ret = iommu_map(domain, iova, page_to_phys(page), PAGE_SIZE,
+			IOMMU_READ | IOMMU_CACHE);
+	if (ret) {
+		dev_err(dev, "cannot map IOVA %lx\n", iova);
+		goto free_iova;
+	}
+
+	ret = iommu_map(domain, iova + PAGE_SIZE, page_to_phys(page) +
+			    PAGE_SIZE, PAGE_SIZE, IOMMU_WRITE | IOMMU_CACHE);
+	if (ret) {
+		dev_err(dev, "cannot map IOVA %lx\n", iova + PAGE_SIZE);
+		goto unmap;
+	}
+
+	test->iova_in	= iova;
+	test->iova_out	= iova + PAGE_SIZE;
+	test->va_in	= page_to_virt(page); // XXX is this legal?
+	test->va_out	= test->va_in + PAGE_SIZE;
+	test->size	= PAGE_SIZE;
+	test->ssid	= iommu_aux_get_pasid(domain, dev);
+
+	if (test->ssid <= 0) {
+		dev_err(dev, "couldn't get PASID\n");
+		goto unmap;
+	}
+
+	ret = smmute_run_selftest_memcpy(smmute, test, false);
+	if (ret)
+		goto unmap;
+
+	/* Now unmap and check that TLBs are properly invalidated */
+	ret = iommu_unmap(domain, iova, PAGE_SIZE);
+	if (ret != PAGE_SIZE) {
+		ret = -EDOM;
+		goto unmap;
+	}
+	ret = smmute_run_selftest_memcpy(smmute, test, true);
+	if (ret)
+		goto unmap;
+
+	ret = iommu_map(domain, iova, page_to_phys(page), PAGE_SIZE,
+			IOMMU_READ | IOMMU_CACHE);
+	if (ret)
+		goto unmap;
+	ret = smmute_run_selftest_memcpy(smmute, test, false);
+	if (ret)
+		goto unmap;
+
+	ret = iommu_unmap(domain, iova + PAGE_SIZE, PAGE_SIZE);
+	if (ret != PAGE_SIZE) {
+		ret = -EDOM;
+		goto unmap;
+	}
+	ret = smmute_run_selftest_memcpy(smmute, test, true);
+	if (ret)
+		goto unmap;
+
+	ret = iommu_map(domain, iova + PAGE_SIZE, page_to_phys(page) +
+			PAGE_SIZE, PAGE_SIZE, IOMMU_WRITE | IOMMU_CACHE);
+	if (ret) {
+		ret = -EDOM;
+		goto unmap;
+	}
+	ret = smmute_run_selftest_memcpy(smmute, test, false);
+	if (ret)
+		goto unmap;
+
+	iommu_aux_detach_device(domain, dev);
+	iommu_aux_detach_device(domain, dev); /* Should be ignored */
+	ret = smmute_run_selftest_memcpy(smmute, test, true);
+	if (ret)
+		goto unmap;
+
+	/* Domain should have kept the mappings */
+	ret = iommu_aux_attach_device(domain, dev);
+	if (ret) {
+		dev_err(dev, "cannot reattach device\n");
+		goto unmap;
+	}
+	ret = smmute_run_selftest_memcpy(smmute, test, false);
+	if (ret)
+		goto unmap;
+
+unmap:
+	iommu_unmap(domain, iova, 2 * PAGE_SIZE);
+free_iova:
+	free_iova_fast(iovad, iova >> PAGE_SHIFT, 2);
+free_pages:
+	if (resv_iova)
+		free_iova_fast(iovad, resv_iova, 1);
+	__free_pages(page, 0);
+detach_device:
+	iommu_aux_detach_device(domain, dev);
+free_domain:
+	iommu_domain_free(domain);
+free_iovad:
+	put_iova_domain(iovad);
+	kfree(iovad);
+
+	return ret;
+}
+
+static int smmute_run_selftests(struct smmute_device *smmute)
+{
+	int ret;
+	int i = 1;
+	bool iommu_present = (iommu_get_domain_for_dev(smmute->dev) != NULL);
+	struct smmute_selftest tests[] = {
+		{
+			.size = 6 * PAGE_SIZE,
+		},
+		{
+			.seed = 1,
+			.size = PAGE_SIZE,
+		},
+		{
+			.seed = 2,
+			/* TODO: support more than one page */
+			.size = PAGE_SIZE + 0x1234,
+		},
+		{
+			.seed = 3,
+			.size = 42 * PAGE_SIZE,
+		},
+		{
+			.seed = 4,
+			.size = 256 * PAGE_SIZE,
+		},
+	};
+
+	dev_info(smmute->dev, "starting selftests...\n");
+	ret = smmute_run_simple_selftest(smmute, &tests[0], iommu_present);
+	if (ret) {
+		dev_err(smmute->dev, "test 0 failed\n");
+		goto test_done;
+	}
+
+	if (!iommu_present) {
+		dev_info(smmute->dev, "no SMMU detected, exiting selftest\n");
+		goto test_done;
+	}
+
+	/* Specialized PASID tests */
+	iova_cache_get();
+	for (; i < ARRAY_SIZE(tests); i++) {
+		ret = smmute_run_selftest(smmute, &tests[i]);
+		if (ret) {
+			dev_err(smmute->dev, "test %d failed\n", i);
+			break;
+		}
+	}
+	iova_cache_put();
+
+test_done:
+	dev_info(smmute->dev, "%d/%lu complete, ret %d\n", i,
+		 ARRAY_SIZE(tests), ret);
+	return ret;
+}
+#else /* !CONFIG_SMMU_TEST_ENGINE_SELFTEST */
+static int smmute_run_selftests(struct smmute_device *smmute)
+{
+	return 0;
+}
+#endif
+
 static const int dev_features[] = {
 	IOMMU_DEV_FEAT_IOPF,
 	IOMMU_DEV_FEAT_SVA,
@@ -1937,10 +2349,18 @@ static int smmute_common_probe(struct smmute_device *smmute)
 	dev_info(dev, "has %zux2 pages of %zu frames\n", smmute->nr_pairs,
 		 SMMUTE_FRAMES_PER_PAGE);
 
-	/* TODO: self-test */
+	ret = smmute_run_selftests(smmute);
+	if (ret)
+		goto err_remove;
 
 	return 0;
 
+err_remove:
+	mutex_lock(&smmute_devices_mutex);
+	list_del(&smmute->list);
+	mutex_unlock(&smmute_devices_mutex);
+
+	smmute_free_msi_pool(smmute);
 err_release_tasks:
 	kset_unregister(smmute->tasks_set);
 err_release_files:
