@@ -187,6 +187,7 @@ struct smmute_dma {
 
 	dma_addr_t			iova;
 	size_t				size;
+	bool				is_msi;
 
 	struct smmute_task		*task;
 	struct smmute_file_desc		*fd;
@@ -200,6 +201,9 @@ struct smmute_task {
 	struct iommu_sva		*handle;
 	struct pid			*pid;
 	u32				ssid;
+
+	struct list_head		msi_mappings;
+	spinlock_t			msi_mappings_lock;
 };
 
 struct smmute_task_fd {
