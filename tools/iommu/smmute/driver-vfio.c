@@ -79,7 +79,8 @@ static int smmute_vfio_map_buffer(struct smmute_dev *dev, void *va,
 	 * to the device's reserved regions. But there is no API for that at the
 	 * moment, it's under discussion.
 	 */
-	*iova = (uint64_t)va;
+	if (!opts->force_iova)
+		*iova = (uint64_t)va;
 
 	if (opts->unified)
 		return 0;

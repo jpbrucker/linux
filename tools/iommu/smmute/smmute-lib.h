@@ -98,6 +98,9 @@ struct smmute_mem_options {
 	char				*out_file_path;
 	int				in_file;
 	int				out_file;
+
+	/* Set iova manually (VFIO) */
+	bool				force_iova;
 };
 
 /* Buffer allocation helpers */
