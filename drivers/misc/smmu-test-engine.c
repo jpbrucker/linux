@@ -1968,6 +1968,7 @@ static int smmute_run_selftest_memcpy(struct smmute_device *smmute,
 	long frame;
 	int sid = 0;
 	int ret = 0;
+	ktime_t timeout;
 	int ssid = test->ssid;
 	struct smmute_uframe *uframe;
 	struct smmute_pframe *pframe;
@@ -2011,10 +2012,17 @@ static int smmute_run_selftest_memcpy(struct smmute_device *smmute,
 	for (i = 0; i < test->size && buf; i++)
 		buf[i] = i + test->seed;
 
+	timeout = ktime_add_us(ktime_get(), 1000000);
 	writel_relaxed(ENGINE_MEMCPY, &uframe->cmd);
-	while ((cmd = readl_relaxed(&uframe->cmd)) == ENGINE_MEMCPY)
+	while (((cmd = readl_relaxed(&uframe->cmd)) == ENGINE_MEMCPY) &&
+	       ktime_before(ktime_get(), timeout)) {
+		/* With PREEMPT_NONE, let the fault handler run */
+		cond_resched();
 		cpu_relax();
+	}
 
+	if (cmd == ENGINE_MEMCPY)
+		dev_warn(smmute->dev, "timeout\n");
 	if (cmd != ENGINE_HALTED)
 		ret = -EFAULT;
 
@@ -2277,6 +2285,7 @@ detach_device:
 free_domain:
 	iommu_domain_free(domain);
 free_iovad:
+	put_iova_domain(iovad);
 	kfree(iovad);
 
 	return ret;
