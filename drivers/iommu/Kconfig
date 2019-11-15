@@ -394,4 +394,16 @@ config VIRTIO_IOMMU
 config VIRTIO_IOMMU_TOPOLOGY_HELPERS
 	bool
 
+config VIRTIO_IOMMU_TOPOLOGY
+	bool "Handle topology properties from the virtio-iommu"
+	depends on VIRTIO_IOMMU
+	depends on PCI
+	default y
+	select VIRTIO_IOMMU_TOPOLOGY_HELPERS
+	help
+	  Enable early probing of virtio-iommu devices to detect the built-in
+	  topology description.
+
+	  Say Y here if you intend to run this kernel as a guest.
+
 endif # IOMMU_SUPPORT
