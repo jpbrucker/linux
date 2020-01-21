@@ -19,6 +19,7 @@
 #include <linux/kexec.h>
 #include <linux/of_device.h>
 #include <linux/acpi.h>
+#include <linux/virt_iommu.h>
 #include "pci.h"
 #include "pcie/portdrv.h"
 
@@ -1604,6 +1605,10 @@ static int pci_dma_configure(struct device *dev)
 {
 	struct device *bridge;
 	int ret = 0;
+
+	ret = virt_dma_configure(dev);
+	if (ret)
+		return ret;
 
 	bridge = pci_get_host_bridge_device(to_pci_dev(dev));
 
