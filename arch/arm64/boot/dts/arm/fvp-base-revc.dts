@@ -185,6 +185,22 @@
 		msi-parent = <&its 0x10000>;
 	};
 
+	pmu@2b40200 {
+		compatible = "arm,mmu-600-pmcg", "arm,smmu-v3-pmcg";
+		/* This overlaps the first SMMUv3 page */
+		reg = <0x0 0x2b402000 0x0 0x1000>,
+		      <0x0 0x2b422000 0x0 0x1000>;
+		msi-parent = <&its 0x10000>;
+	};
+
+	pmu@2b44200 {
+		compatible = "arm,mmu-600-pmcg", "arm,smmu-v3-pmcg";
+		/* This overlaps the first SMMUv3 page */
+		reg = <0x0 0x2b442000 0x0 0x1000>,
+		      <0x0 0x2b452000 0x0 0x1000>;
+		msi-parent = <&its 0x10000>;
+	};
+
 	panel {
 		compatible = "arm,rtsm-display", "panel-dpi";
 		port {
