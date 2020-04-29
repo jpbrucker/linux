@@ -9,6 +9,8 @@
 #include <linux/sched/mm.h>
 #include <linux/slab.h>
 
+#include <trace/events/smmu.h>
+
 #include "arm-smmu-v3.h"
 #include "../../iommu-sva.h"
 #include "../../io-pgtable-arm.h"
@@ -249,6 +251,7 @@ static void arm_smmu_mm_arch_invalidate_secondary_tlbs(struct mmu_notifier *mn,
 	}
 
 	arm_smmu_atc_inv_domain(smmu_domain, mm->pasid, start, size);
+	trace_smmu_mm_invalidate(mm->pasid, start, end);
 }
 
 static void arm_smmu_mm_release(struct mmu_notifier *mn, struct mm_struct *mm)
@@ -257,6 +260,7 @@ static void arm_smmu_mm_release(struct mmu_notifier *mn, struct mm_struct *mm)
 	struct arm_smmu_domain *smmu_domain = smmu_mn->domain;
 
 	mutex_lock(&sva_lock);
+	trace_smmu_mm_release(mm->pasid, smmu_mn->cleared);
 	if (smmu_mn->cleared) {
 		mutex_unlock(&sva_lock);
 		return;
@@ -300,6 +304,7 @@ arm_smmu_mmu_notifier_get(struct arm_smmu_domain *smmu_domain,
 	list_for_each_entry(smmu_mn, &smmu_domain->mmu_notifiers, list) {
 		if (smmu_mn->mn.mm == mm) {
 			refcount_inc(&smmu_mn->refs);
+			trace_smmu_mn_get(mm->pasid);
 			return smmu_mn;
 		}
 	}
@@ -339,6 +344,7 @@ arm_smmu_mmu_notifier_get(struct arm_smmu_domain *smmu_domain,
 		goto err_put_notifier;
 
 	list_add(&smmu_mn->list, &smmu_domain->mmu_notifiers);
+	trace_smmu_mn_alloc(mm->pasid);
 	return smmu_mn;
 
 err_put_notifier:
@@ -355,8 +361,10 @@ static void arm_smmu_mmu_notifier_put(struct arm_smmu_mmu_notifier *smmu_mn)
 	struct arm_smmu_ctx_desc *cd = smmu_mn->cd;
 	struct arm_smmu_domain *smmu_domain = smmu_mn->domain;
 
-	if (!refcount_dec_and_test(&smmu_mn->refs))
+	if (!refcount_dec_and_test(&smmu_mn->refs)) {
+		trace_smmu_mn_put(mm->pasid);
 		return;
+	}
 
 	list_del(&smmu_mn->list);
 
@@ -373,6 +381,7 @@ static void arm_smmu_mmu_notifier_put(struct arm_smmu_mmu_notifier *smmu_mn)
 
 	/* Frees smmu_mn */
 	mmu_notifier_put(&smmu_mn->mn);
+	trace_smmu_mn_free(mm->pasid);
 	arm_smmu_free_shared_cd(cd);
 }
 
@@ -400,6 +409,7 @@ static int __arm_smmu_sva_bind(struct device *dev, struct mm_struct *mm)
 	}
 
 	list_add(&bond->list, &master->bonds);
+	trace_smmu_bind_alloc(dev, mm->pasid);
 	return 0;
 
 err_free_bond:
@@ -621,9 +631,12 @@ void arm_smmu_sva_remove_dev_pasid(struct iommu_domain *domain,
 	}
 
 	if (!WARN_ON(!bond)) {
+		trace_smmu_unbind_free(dev, mm->pasid);
 		list_del(&bond->list);
 		arm_smmu_mmu_notifier_put(bond->smmu_mn);
 		kfree(bond);
+	} else {
+		trace_smmu_unbind_put(dev, bond->mm->pasid);
 	}
 	mutex_unlock(&sva_lock);
 }
