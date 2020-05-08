@@ -26,6 +26,7 @@
  */
 #define ACPI_SIG_IORT           "IORT"	/* IO Remapping Table */
 #define ACPI_SIG_IVRS           "IVRS"	/* I/O Virtualization Reporting Structure */
+#define ACPI_SIG_VIOT		"VIOT"	/* Virtual I/O Translation Table */
 #define ACPI_SIG_LPIT           "LPIT"	/* Low Power Idle Table */
 #define ACPI_SIG_MADT           "APIC"	/* Multiple APIC Description Table */
 #define ACPI_SIG_MCFG           "MCFG"	/* PCI Memory Mapped Configuration table */
@@ -425,6 +426,69 @@ struct acpi_ivrs_memory {
 	u64 reserved;
 	u64 start_address;
 	u64 memory_length;
+};
+
+/*******************************************************************************
+ *
+ * VIOT - Virtual IO Translation Table
+ *
+ * Conforms to "ACPI VIOT draft v8", July 2020
+ *
+ ******************************************************************************/
+
+struct acpi_table_viot {
+	struct acpi_table_header header;
+	u16 node_count;
+	u16 node_offset;
+	u8 reserved[8];
+};
+
+/* Node header */
+struct acpi_viot_node {
+	u8 type;
+	u8 reserved;
+	u16 length;
+};
+
+/* Values for node Type above */
+
+enum acpi_viot_node_type {
+	ACPI_VIOT_NODE_PCI_RANGE = 0x01,
+	ACPI_VIOT_NODE_MMIO = 0x02,
+	ACPI_VIOT_NODE_VIRTIO_IOMMU_PCI = 0x03,
+	ACPI_VIOT_NODE_VIRTIO_IOMMU_MMIO = 0x04,
+};
+
+struct acpi_viot_pci_range {
+	struct acpi_viot_node header;
+	u32 endpoint_start;
+	u16 segment;
+	u16 bdf_start;
+	u16 bdf_end;
+	u8 reserved1[2];
+	u16 output_node;
+	u8 reserved2[6];
+};
+
+struct acpi_viot_mmio {
+	struct acpi_viot_node header;
+	u32 endpoint;
+	u64 base_address;
+	u16 output_node;
+	u8 reserved1[6];
+};
+
+struct acpi_viot_virtio_iommu_pci {
+	struct acpi_viot_node header;
+	u16 segment;
+	u16 bdf;
+	u8 reserved[8];
+};
+
+struct acpi_viot_virtio_iommu_mmio {
+	struct acpi_viot_node header;
+	u8 reserved[4];
+	u64 base_address;
 };
 
 /*******************************************************************************
