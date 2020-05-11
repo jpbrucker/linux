@@ -391,4 +391,7 @@ config VIRTIO_IOMMU
 
 	  Say Y here if you intend to run this kernel as a guest.
 
+config VIRTIO_IOMMU_TOPOLOGY_HELPERS
+	bool
+
 endif # IOMMU_SUPPORT
