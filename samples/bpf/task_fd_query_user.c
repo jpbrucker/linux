@@ -227,7 +227,7 @@ static int test_nondebug_fs_probe(const char *event_type, const char *name,
 
 static int test_debug_fs_uprobe(char *binary_path, long offset, bool is_return)
 {
-	char buf[256], event_alias[sizeof("test_1234567890")];
+	char buf[256], event_alias[sizeof("test_1234567890_x")];
 	const char *event_type = "uprobe";
 	struct perf_event_attr attr = {};
 	__u64 probe_offset, probe_addr;
@@ -241,7 +241,8 @@ static int test_debug_fs_uprobe(char *binary_path, long offset, bool is_return)
 	kfd = open(buf, O_WRONLY | O_TRUNC, 0);
 	CHECK_PERROR_RET(kfd < 0);
 
-	res = snprintf(event_alias, sizeof(event_alias), "test_%d", getpid());
+	res = snprintf(event_alias, sizeof(event_alias), "test_%d_%c", getpid(),
+		       is_return ? 'r' : 'p');
 	CHECK_PERROR_RET(res < 0 || res >= sizeof(event_alias));
 
 	res = snprintf(buf, sizeof(buf), "%c:%ss/%s %s:0x%lx",
