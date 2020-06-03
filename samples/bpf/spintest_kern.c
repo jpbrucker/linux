@@ -46,11 +46,11 @@ int foo(struct pt_regs *ctx) \
 }
 
 /* add kprobes to all possible *spin* functions */
-SEC("kprobe/spin_unlock")PROG(p1)
-SEC("kprobe/spin_lock")PROG(p2)
+//SEC("kprobe/spin_unlock")PROG(p1)
+//SEC("kprobe/spin_lock")PROG(p2)
 SEC("kprobe/mutex_spin_on_owner")PROG(p3)
 SEC("kprobe/rwsem_spin_on_owner")PROG(p4)
-SEC("kprobe/spin_unlock_irqrestore")PROG(p5)
+//SEC("kprobe/spin_unlock_irqrestore")PROG(p5)
 SEC("kprobe/_raw_spin_unlock_irqrestore")PROG(p6)
 SEC("kprobe/_raw_spin_unlock_bh")PROG(p7)
 SEC("kprobe/_raw_spin_unlock")PROG(p8)
