@@ -53,6 +53,7 @@ tprogs-y += task_fd_query
 tprogs-y += xdp_sample_pkts
 tprogs-y += ibumad
 tprogs-y += hbm
+tprogs-y += simple_test
 
 tprogs-y += xdp_redirect_cpu
 tprogs-y += xdp_redirect_map_multi
