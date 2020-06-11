@@ -19,36 +19,6 @@
 
 #ifdef CONFIG_DYNAMIC_FTRACE
 /*
- * Replace a single instruction, which may be a branch or NOP.
- * If @validate == true, a replaced instruction is checked against 'old'.
- */
-static int ftrace_modify_code(unsigned long pc, u32 old, u32 new,
-			      bool validate)
-{
-	u32 replaced;
-
-	/*
-	 * Note:
-	 * We are paranoid about modifying text, as if a bug were to happen, it
-	 * could cause us to read or write to someplace that could cause harm.
-	 * Carefully read and modify the code with aarch64_insn_*() which uses
-	 * probe_kernel_*(), and make sure what we read is what we expected it
-	 * to be before modifying it.
-	 */
-	if (validate) {
-		if (aarch64_insn_read((void *)pc, &replaced))
-			return -EFAULT;
-
-		if (replaced != old)
-			return -EINVAL;
-	}
-	if (aarch64_insn_patch_text_nosync((void *)pc, new))
-		return -EPERM;
-
-	return 0;
-}
-
-/*
  * Replace tracer function in ftrace_caller()
  */
 int ftrace_update_ftrace_func(ftrace_func_t func)
@@ -60,7 +30,7 @@ int ftrace_update_ftrace_func(ftrace_func_t func)
 	new = aarch64_insn_gen_branch_imm(pc, (unsigned long)func,
 					  AARCH64_INSN_BRANCH_LINK);
 
-	return ftrace_modify_code(pc, 0, new, false);
+	return aarch64_insn_update(pc, 0, new, false);
 }
 
 static struct plt_entry *get_ftrace_plt(struct module *mod, unsigned long addr)
@@ -122,7 +92,7 @@ int ftrace_make_call(struct dyn_ftrace *rec, unsigned long addr)
 	old = aarch64_insn_gen_nop();
 	new = aarch64_insn_gen_branch_imm(pc, addr, AARCH64_INSN_BRANCH_LINK);
 
-	return ftrace_modify_code(pc, old, new, true);
+	return aarch64_insn_update(pc, old, new, true);
 }
 
 #ifdef CONFIG_DYNAMIC_FTRACE_WITH_REGS
@@ -136,7 +106,7 @@ int ftrace_modify_call(struct dyn_ftrace *rec, unsigned long old_addr,
 					  AARCH64_INSN_BRANCH_LINK);
 	new = aarch64_insn_gen_branch_imm(pc, addr, AARCH64_INSN_BRANCH_LINK);
 
-	return ftrace_modify_code(pc, old, new, true);
+	return aarch64_insn_update(pc, old, new, true);
 }
 
 /*
@@ -170,7 +140,7 @@ int ftrace_init_nop(struct module *mod, struct dyn_ftrace *rec)
 	new = aarch64_insn_gen_move_reg(AARCH64_INSN_REG_9,
 					AARCH64_INSN_REG_LR,
 					AARCH64_INSN_VARIANT_64BIT);
-	return ftrace_modify_code(pc, old, new, true);
+	return aarch64_insn_update(pc, old, new, true);
 }
 #endif
 
@@ -228,7 +198,7 @@ int ftrace_make_nop(struct module *mod, struct dyn_ftrace *rec,
 
 	new = aarch64_insn_gen_nop();
 
-	return ftrace_modify_code(pc, old, new, validate);
+	return aarch64_insn_update(pc, old, new, validate);
 }
 
 void arch_ftrace_update_code(int command)
@@ -283,9 +253,9 @@ static int ftrace_modify_graph_caller(bool enable)
 	nop = aarch64_insn_gen_nop();
 
 	if (enable)
-		return ftrace_modify_code(pc, nop, branch, true);
+		return aarch64_insn_update(pc, nop, branch, true);
 	else
-		return ftrace_modify_code(pc, branch, nop, true);
+		return aarch64_insn_update(pc, branch, nop, true);
 }
 
 int ftrace_enable_ftrace_graph_caller(void)

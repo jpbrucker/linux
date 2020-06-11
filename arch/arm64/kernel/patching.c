@@ -105,6 +105,35 @@ int __kprobes aarch64_insn_patch_text_nosync(void *addr, u32 insn)
 	return ret;
 }
 
+/*
+ * Replace a single instruction.
+ * If @validate == true, a replaced instruction is checked against 'old'.
+ */
+int aarch64_insn_update(unsigned long addr, u32 old, u32 new, bool validate)
+{
+	u32 replaced;
+
+	/*
+	 * Note:
+	 * We are paranoid about modifying text, as if a bug were to happen, it
+	 * could cause us to read or write to someplace that could cause harm.
+	 * Carefully read and modify the code with aarch64_insn_*() which uses
+	 * probe_kernel_*(), and, when asked to validate, make sure what we read
+	 * is what we expected it to be before modifying it.
+	 */
+	if (validate) {
+		if (aarch64_insn_read((void *)addr, &replaced))
+			return -EFAULT;
+
+		if (replaced != old)
+			return -EINVAL;
+	}
+	if (aarch64_insn_patch_text_nosync((void *)addr, new))
+		return -EPERM;
+
+	return 0;
+}
+
 struct aarch64_insn_patch {
 	void		**text_addrs;
 	u32		*new_insns;
