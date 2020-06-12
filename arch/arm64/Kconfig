@@ -1947,6 +1947,20 @@ config STACKPROTECTOR_PER_TASK
 	def_bool y
 	depends on STACKPROTECTOR && CC_HAVE_STACKPROTECTOR_SYSREG
 
+config ARM64_BPF_TRAMPOLINE
+	bool "Enable BPF trampoline generation (EXPERIMENTAL)"
+	# We need the whole ftrace infrastructure:
+	# - enable mcount NOP generation
+	# - enable early patching of all mcount locations
+	depends on DYNAMIC_FTRACE_WITH_REGS
+
+	# Right? We're rewriting the return pointers
+	depends on !SHADOW_CALL_STACK
+	help
+	  Enable patching of kernel functions to insert BPF trampolines. This is
+	  needed by several BPF features such as fentry/fexit.
+
+	  If unsure, say N.
 endmenu
 
 menu "Boot options"

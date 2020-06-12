@@ -94,6 +94,36 @@ static inline void emit_a64_mov_i(const int is64, const int reg,
 	}
 }
 
+static inline int emit_bl(void *target, struct jit_ctx *ctx)
+{
+	long pc;
+	u32 insn;
+	long offset;
+	long addr = (long)target;
+
+	/* First pass only computes the image size */
+	if (!ctx->image) {
+		ctx->idx++;
+		return 0;
+	}
+
+	pc = (long)&ctx->image[ctx->idx];
+
+	/* Preliminary checks here to avoid printing errors. */
+	if ((pc & 0x3) || (addr & 0x3))
+		return -EINVAL;
+
+	offset = ((long)addr - (long)pc);
+	if (offset < -SZ_128M || offset >= SZ_128M)
+		return -ERANGE;
+
+	insn = aarch64_insn_gen_branch_imm(pc, addr, AARCH64_INSN_BRANCH_LINK);
+	if (insn == AARCH64_BREAK_FAULT)
+		return -EINVAL;
+	emit(insn, ctx);
+	return 0;
+}
+
 static int i64_i16_blocks(const u64 val, bool inverse)
 {
 	return (((val >>  0) & 0xffff) != (inverse ? 0xffff : 0x0000)) +
@@ -1140,6 +1170,398 @@ out:
 					   tmp : orig_prog);
 	return prog;
 }
+
+#ifdef CONFIG_ARM64_BPF_TRAMPOLINE
+/* Up to 8 arguments in x0-x7 */
+#define BPF_TRAMP_MAX_ARGS 8
+
+/* Emit branches to one BPF program, wrapped with __bpf_prog_enter/exit() */
+static int invoke_one_bpf(const struct btf_func_model *m, struct jit_ctx *ctx,
+			  struct bpf_prog *prog, int *ret_branch, u32 flags,
+			  u8 tstamp_reg, u8 retval_reg, u8 prog_enter_reg,
+			  u8 prog_exit_reg)
+{
+	int ret;
+	off_t offset;
+	const u8 x0 = A64_R(0);
+	const u8 x1 = A64_R(1);
+
+	/* Call __bpf_prog_enter(void) */
+	emit(A64_BLR(prog_enter_reg), ctx);
+	/* Save the timestamp returned by __bpf_prog_enter */
+	emit(A64_MOV(1, tstamp_reg, x0), ctx);
+
+	/*
+	 * The BPF program takes a context pointer in x0. The context
+	 * contains all fun() arguments, and for fmod_ret programs, the
+	 * return value of the previous BPF program. If the program is
+	 * interpreted, it also needs a pointer to the instructions in r2.
+	 */
+	emit(A64_MOV(1, x0, A64_SP), ctx);
+	if (!prog->jited) {
+		WARN_ONCE(1, "### REMOVE ME %s ### this path is now tested\n",
+			  __func__);
+		emit_a64_mov_i64(x1, (long)prog->insnsi, ctx);
+	}
+
+	/* The BPF JIT region is 128M, so at least this should succeed. */
+	ret = emit_bl(prog->bpf_func, ctx);
+	if (ret) {
+		pr_err_once("invalid branch outside BPF region\n");
+		return ret;
+	}
+
+	/*
+	 * When we don't call or return to a patched function (flags == 0), the
+	 * return value of the last program is the one from the trampoline.
+	 */
+	if (ret_branch || !flags)
+		emit(A64_MOV(1, retval_reg, x0), ctx);
+
+	/* Call __bpf_prog_exit(bpf_prog, tstamp) */
+	emit_a64_mov_i64(x0, (long)prog, ctx);
+	emit(A64_MOV(1, x1, tstamp_reg), ctx);
+	emit(A64_BLR(prog_exit_reg), ctx);
+
+	if (ret_branch) {
+		/* If ret == 0, skip the next two instructions. */
+		emit(A64_CMP(1, retval_reg, A64_ZR), ctx);
+		emit(A64_B_(A64_COND_EQ, (3 * AARCH64_INSN_SIZE) >> 2), ctx);
+
+		/*
+		 * Otherwise store the return value and jump past the function
+		 * invocation. We don't yet have the target address, so emit a
+		 * placeholder.
+		 */
+		offset = 8 * m->nr_args;
+		emit(A64_STR64_IMM(retval_reg, A64_SP, offset), ctx);
+		*ret_branch = ctx->idx;
+		emit(aarch64_insn_gen_nop(), ctx);
+	}
+
+	return 0;
+}
+
+static int invoke_bpf(const struct btf_func_model *m, struct jit_ctx *ctx,
+		      struct bpf_tramp_progs *tp, int *ret_branches,
+		      u32 flags, u8 tstamp_reg, u8 retval_reg, u8
+		      prog_enter_reg, u8 prog_exit_reg)
+{
+	int i, ret;
+
+	for (i = 0; i < tp->nr_progs; i++) {
+		int *ret_branch = ret_branches ? &ret_branches[i] : NULL;
+
+		ret = invoke_one_bpf(m, ctx, tp->progs[i], ret_branch,
+				     flags, tstamp_reg, retval_reg,
+				     prog_enter_reg, prog_exit_reg);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+static int gen_trampoline(struct jit_ctx *ctx, const struct btf_func_model *m,
+			  u32 flags, struct bpf_tramp_progs *tprogs,
+			  void *orig_call)
+{
+	int i, ret;
+	off_t offset;
+	size_t nr_stack_regs;
+	int *ret_branches = NULL;
+	size_t nr_args = m->nr_args;
+	u8 stack[BPF_TRAMP_MAX_ARGS + 2 + 6];
+	const u8 tstamp_reg = bpf2a64[BPF_REG_6];
+	const u8 retval_reg = bpf2a64[BPF_REG_7];
+	const u8 prog_enter_reg = bpf2a64[BPF_REG_8];
+	const u8 prog_exit_reg = bpf2a64[BPF_REG_9];
+	/* Not callee saved */
+	const u8 tmp1_reg = bpf2a64[TMP_REG_1];
+	const u8 tmp2_reg = bpf2a64[TMP_REG_2];
+
+	unsigned long ret_address = (unsigned long)orig_call +
+		2 * AARCH64_INSN_SIZE;
+
+	bool return_to_orig = false;
+	bool call_orig = (flags & BPF_TRAMP_F_CALL_ORIG);
+	bool restore_regs = (flags & BPF_TRAMP_F_RESTORE_REGS);
+	bool restore_ret = false;
+
+	struct bpf_tramp_progs *fentry = &tprogs[BPF_TRAMP_FENTRY];
+	struct bpf_tramp_progs *fexit = &tprogs[BPF_TRAMP_FEXIT];
+	struct bpf_tramp_progs *fmod_ret = &tprogs[BPF_TRAMP_MODIFY_RETURN];
+
+	/* Only support register parameters for now */
+	if (nr_args > BPF_TRAMP_MAX_ARGS)
+		return -ENOTSUPP;
+
+	/*
+	 * Support three modes:
+	 * - No flags
+	 *   A simple call to the trampoline (for bpf_struct_ops), there is no
+	 *   patched function and LR is the callsite.
+	 * - BPF_TRAMP_F_RESTORE_REGS
+	 *   Call fentry only and return to fun() with its original arguments.
+	 * - BPF_TRAMP_F_CALL_ORIG | BPF_TRAMP_F_SKIP_FRAME
+	 *   Call fentry and fmod_ret, return to fun(), call fexit, return to
+	 *   the parent.
+	 */
+	switch (flags) {
+	case 0:
+		if (WARN_ON_ONCE(orig_call))
+			return -EINVAL;
+		restore_ret = true;
+		break;
+	case BPF_TRAMP_F_RESTORE_REGS:
+		if (WARN_ON_ONCE(fmod_ret->nr_progs || fexit->nr_progs ||
+				 !orig_call))
+			return -EINVAL;
+		return_to_orig = true;
+		break;
+	case BPF_TRAMP_F_CALL_ORIG | BPF_TRAMP_F_SKIP_FRAME:
+		if (WARN_ON_ONCE(!orig_call))
+			return -EINVAL;
+		restore_ret = true;
+		break;
+	default:
+		WARN_ON_ONCE(1);
+		return -ENOTSUPP;
+	}
+
+	/* BTI landing pad */
+	if (IS_ENABLED(CONFIG_ARM64_BTI_KERNEL)) {
+		/* FIXME: This is too fragile. Find it in the mcount records. */
+		ret_address += AARCH64_INSN_SIZE;
+		emit(A64_BTI_C, ctx);
+	}
+
+	/*
+	 * Initialize the trampoline frame:
+	 *
+	 *       0 +--------------------+ <- SP on trampoline entry
+	 *         |   LR, FP           |
+	 *     -16 +--------------------+ <- trampoline FP
+	 *         | - callee saved     |
+	 *     -48 +--------------------+
+	 *         | - saved ret value  |
+	 *         | - fun() args       |
+	 *   -48-X +--------------------+ <- ctx of BPF programs
+	 *
+	 * Where X = ALIGN(8 * (nr_args + 1), 16)
+	 */
+
+	for (i = 0; i < nr_args; i++)
+		stack[i] = i;
+	/* Reserve one slot (initialized to zero) for the return value */
+	stack[i++] = A64_ZR;
+
+	/* Align the stack to 16 bytes */
+	if (i % 2)
+		stack[i++] = A64_ZR;
+
+	stack[i++] = tstamp_reg;
+	stack[i++] = retval_reg;
+	stack[i++] = prog_enter_reg;
+	stack[i++] = prog_exit_reg;
+	nr_stack_regs = i;
+
+	/* Save FP and LR registers */
+	emit(A64_PUSH(A64_FP, A64_LR, A64_SP), ctx);
+	emit(A64_MOV(1, A64_FP, A64_SP), ctx);
+	ctx->stack_size += 16;
+
+	for (i = nr_stack_regs - 2; i >= 0; i -= 2)
+		emit(A64_PUSH(stack[i], stack[i + 1], A64_SP), ctx);
+	ctx->stack_size += nr_stack_regs * 8;
+	if (WARN_ON_ONCE(!IS_ALIGNED(ctx->stack_size, 16)))
+		return -EFAULT;
+
+	/*
+	 * Calls to BPF programs are wrapped between calls to __bpf_prog_enter
+	 * and __bpf_prog_exit. Unfortunately the kernel text is at least 128MB
+	 * away from pc, so we can't use a direct jump.
+	 */
+	emit_a64_mov_i64(prog_enter_reg, (u64)&__bpf_prog_enter, ctx);
+	emit_a64_mov_i64(prog_exit_reg, (u64)&__bpf_prog_exit, ctx);
+
+	/* (1) Call all the fentry programs */
+	ret = invoke_bpf(m, ctx, fentry, NULL, flags, tstamp_reg,
+			 retval_reg, prog_enter_reg, prog_exit_reg);
+	if (ret)
+		return ret;
+
+	/* (2) Call all the fmod_ret programs */
+	if (fmod_ret->nr_progs) {
+		ret_branches = kcalloc(fmod_ret->nr_progs,
+				       sizeof(ret_branches[0]), GFP_KERNEL);
+		if (!ret_branches)
+			return -ENOMEM;
+
+		ret = invoke_bpf(m, ctx, fmod_ret, ret_branches, flags,
+				 tstamp_reg, retval_reg, prog_enter_reg,
+				 prog_exit_reg);
+		if (ret)
+			goto out_free;
+	}
+
+	if (call_orig) {
+		/*
+		 * (3a) Return to fun().
+		 *
+		 * One does not simply walk into fun(). There is no BTI landing
+		 * pad after the patched function entry. We have to return there
+		 * after modifying the stack and return address to bring us back
+		 * here once the function terminates.
+		 *
+		 * See also the FUNCTION_GRAPH_TRACER implementation, it does
+		 * the same thing.
+		 */
+
+		/*
+		 * Restore the original fun() arguments without popping the
+		 * frame.
+		 */
+		emit(A64_MOV(1, tmp1_reg, A64_SP), ctx);
+		for (i = 0; i < nr_args; i += 2)
+			/* May pop the return value into xzr. Harmless. */
+			emit(A64_POP(stack[i], stack[i + 1], tmp1_reg), ctx);
+
+		emit_a64_mov_i64(tmp2_reg, ret_address, ctx);
+
+		/*
+		 * Set fun()'s LR to return on the insn following ret. This
+		 * one's funny: emit_a64_mov_i64() generates one to four mov
+		 * instructions, depending on the target address. And the target
+		 * address depends on the number of movs :) Lazy solution: use a
+		 * fixed offset of 4 and fill with nops.
+		 */
+		offset = ctx->idx + 4;
+		if (ctx->image)
+			emit_a64_mov_i64(A64_LR,
+					 (long)(ctx->image + offset + 1), ctx);
+		for (i = ctx->idx; i < offset; i++)
+			emit(aarch64_insn_gen_nop(), ctx);
+		emit(A64_RET(tmp2_reg), ctx);
+
+		/* fun() returns here. Store its return value. */
+		offset = nr_args * 8;
+		emit(A64_MOV(1, retval_reg, A64_R(0)), ctx);
+		emit(A64_STR64_IMM(retval_reg, A64_SP, offset), ctx);
+	}
+
+	/*
+	 * Patch the fmod_ret branches to jump here if their return
+	 * value was != 0
+	 */
+	for (i = 0; i < fmod_ret->nr_progs && ctx->image; i++) {
+		int branch_idx = ret_branches[i];
+		u32 insn = le32_to_cpu(ctx->image[branch_idx]);
+
+		if (WARN_ON(insn != aarch64_insn_gen_nop())) {
+			ret = -EINVAL;
+			goto out_free;
+		}
+
+		offset = AARCH64_INSN_SIZE * (ctx->idx - branch_idx);
+		if (WARN_ON(offset > SZ_1M)) {
+			ret = -ERANGE;
+			goto out_free;
+		}
+		insn = A64_B(offset >> 2);
+		ctx->image[branch_idx] = cpu_to_le32(insn);
+	}
+
+	/* (4) Call all the fexit programs */
+	ret = invoke_bpf(m, ctx, fexit, NULL, flags, tstamp_reg, retval_reg,
+			 prog_enter_reg, prog_exit_reg);
+	if (ret)
+		goto out_free;
+
+	/* Restore fun() args if required, or discard them. */
+	offset = STACK_ALIGN(8 * (nr_args + 1));
+	for (i = 0; restore_regs && i < nr_args; i += 2) {
+		emit(A64_POP(stack[i], stack[i + 1], A64_SP), ctx);
+		offset -= 16;
+	}
+	if (offset)
+		emit(A64_ADD_I(1, A64_SP, A64_SP, offset), ctx);
+
+	if (restore_ret)
+		emit(A64_MOV(1, A64_R(0), retval_reg), ctx);
+
+	/* Restore callee-saved */
+	for (i = ALIGN(nr_args + 1, 2); i < nr_stack_regs; i += 2)
+		emit(A64_POP(stack[i], stack[i + 1], A64_SP), ctx);
+
+	/* Restore FP/LR registers */
+	emit(A64_POP(A64_FP, A64_LR, A64_SP), ctx);
+
+	if (return_to_orig) {
+		emit_a64_mov_i64(tmp1_reg, ret_address, ctx);
+		emit(A64_RET(tmp1_reg), ctx);
+	} else {
+		emit(A64_RET(A64_LR), ctx);
+	}
+
+out_free:
+	kfree(ret_branches);
+	return ret;
+}
+
+/*
+ * Generate a trampoline function. A patched function fun(...) branches into the
+ * trampoline.
+ *
+ * Then:
+ * (1) Call all the fentry BPF programs.
+ * (2) Call all the fmod_ret programs. If any of them returns non-null, fun() is
+ *     not called, we go directly to (4).
+ * (3a) Return to fun().
+ * (4) Call all the fexit BPF programs.
+ * (5) Return to fun()'s parent.
+ *
+ * If there aren't any fexit or fmod_ret programs:
+ * (3b) Return to fun(), done.
+ *
+ * There is also the possibility to use the trampoline as a simple function,
+ * called from bpf_struct_ops. In this case we have:
+ * (3c) Return to LR.
+ *
+ * Returns the number of bytes emitted, or a negative error.
+ */
+int arch_prepare_bpf_trampoline(void *image, void *image_end,
+				const struct btf_func_model *m, u32 flags,
+				struct bpf_tramp_progs *tprogs,
+				void *orig_call)
+{
+	int ret;
+	size_t tramp_size;
+
+	struct jit_ctx ctx = {};
+
+	/* First pass to check that we have enough space */
+	ret = gen_trampoline(&ctx, m, flags, tprogs, orig_call);
+	if (ret < 0)
+		return ret;
+
+	tramp_size = ctx.idx * AARCH64_INSN_SIZE;
+	if (WARN_ON_ONCE(tramp_size > (image_end - image)))
+		return -ENOSPC;
+
+	/* Second pass */
+	ctx.idx = 0;
+	ctx.image = image;
+	ret = gen_trampoline(&ctx, m, flags, tprogs, orig_call);
+	if (ret < 0)
+		return ret;
+
+	if (WARN_ON_ONCE(ctx.idx * AARCH64_INSN_SIZE != tramp_size))
+		return -EFAULT;
+
+	bpf_flush_icache(ctx.image, ctx.image + ctx.idx);
+	return tramp_size;
+}
+#endif
 
 u64 bpf_jit_alloc_exec_limit(void)
 {
