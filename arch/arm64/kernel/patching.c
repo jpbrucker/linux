@@ -14,6 +14,7 @@
 #include <asm/sections.h>
 
 static DEFINE_RAW_SPINLOCK(patch_lock);
+static DEFINE_SPINLOCK(aarch64_insn_lock);
 
 static bool is_exit_text(unsigned long addr)
 {
@@ -111,8 +112,18 @@ int __kprobes aarch64_insn_patch_text_nosync(void *addr, u32 insn)
  */
 int aarch64_insn_update(unsigned long addr, u32 old, u32 new, bool validate)
 {
+	int ret = 0;
 	u32 replaced;
 
+	/*
+	 * There already is patch_lock, but here we also do the validation under
+	 * the lock. Avoid conflicts between ftrace and BPF trampoline.
+	 * FIXME: this is very rudimentary, and surely broken.
+	 * How do ftrace and BPF tramp interact with KGDB, and kprobes? Are all
+	 * these serialized somewhere at a higher level?
+	 * Is it safe to keep IRQs enabled?
+	 */
+	spin_lock(&aarch64_insn_lock);
 	/*
 	 * Note:
 	 * We are paranoid about modifying text, as if a bug were to happen, it
@@ -122,16 +133,22 @@ int aarch64_insn_update(unsigned long addr, u32 old, u32 new, bool validate)
 	 * is what we expected it to be before modifying it.
 	 */
 	if (validate) {
-		if (aarch64_insn_read((void *)addr, &replaced))
-			return -EFAULT;
+		if (aarch64_insn_read((void *)addr, &replaced)) {
+			ret = -EFAULT;
+			goto out_unlock;
+		}
 
-		if (replaced != old)
-			return -EINVAL;
+		if (replaced != old) {
+			ret = -EINVAL;
+			goto out_unlock;
+		}
 	}
 	if (aarch64_insn_patch_text_nosync((void *)addr, new))
-		return -EPERM;
+		ret = -EPERM;
 
-	return 0;
+out_unlock:
+	spin_unlock(&aarch64_insn_lock);
+	return ret;
 }
 
 struct aarch64_insn_patch {
