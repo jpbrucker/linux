@@ -504,6 +504,82 @@ u32 aarch64_insn_gen_load_store_reg(enum aarch64_insn_register reg,
 					    offset);
 }
 
+u32 aarch64_insn_gen_load_store_imm(enum aarch64_insn_register reg,
+				    enum aarch64_insn_register base,
+				    int offset,
+				    enum aarch64_insn_size_type size,
+				    enum aarch64_insn_ldst_type type)
+{
+	u32 insn;
+	size_t shift;
+	size_t imm_bits = 9;
+
+	switch (type) {
+	case AARCH64_INSN_LDST_LOAD_REG_OFFSET:
+		insn = aarch64_insn_get_ldr_imm_value();
+		imm_bits = 12;
+		break;
+	case AARCH64_INSN_LDST_STORE_REG_OFFSET:
+		insn = aarch64_insn_get_str_imm_value();
+		imm_bits = 12;
+		break;
+	case AARCH64_INSN_LDST_LOAD_REG_PRE_INDEX:
+		insn = aarch64_insn_get_ldr_pre_value();
+		break;
+	case AARCH64_INSN_LDST_STORE_REG_PRE_INDEX:
+		insn = aarch64_insn_get_str_pre_value();
+		break;
+	case AARCH64_INSN_LDST_LOAD_REG_POST_INDEX:
+		insn = aarch64_insn_get_ldr_post_value();
+		break;
+	case AARCH64_INSN_LDST_STORE_REG_POST_INDEX:
+		insn = aarch64_insn_get_str_post_value();
+		break;
+	default:
+		pr_err("%s: unknown load/store encoding %d\n", __func__, type);
+		return AARCH64_BREAK_FAULT;
+	}
+
+	insn = aarch64_insn_encode_ldst_size(size, insn);
+
+	insn = aarch64_insn_encode_register(AARCH64_INSN_REGTYPE_RT, insn, reg);
+
+	insn = aarch64_insn_encode_register(AARCH64_INSN_REGTYPE_RN, insn,
+					    base);
+
+	if (imm_bits == 9) {
+		if (offset < -256 || offset > 255) {
+			pr_err("%s: offset must be in the range of [-256, 255] %d\n",
+			       __func__, offset);
+			return AARCH64_BREAK_FAULT;
+		}
+		return aarch64_insn_encode_immediate(AARCH64_INSN_IMM_9, insn,
+						     offset);
+	}
+
+	switch (size) {
+	case AARCH64_INSN_SIZE_64:
+		shift = 3;
+		break;
+	case AARCH64_INSN_SIZE_32:
+		shift = 2;
+		break;
+	case AARCH64_INSN_SIZE_16:
+		shift = 1;
+		break;
+	case AARCH64_INSN_SIZE_8:
+		shift = 0;
+		break;
+	}
+	if (offset & ~(0xfff << shift)) {
+		pr_err("%s: offset must be multiple of %d in the range [0, %d] %d\n",
+		       __func__, 1 << shift, 0xfff << shift, offset);
+		return AARCH64_BREAK_FAULT;
+	}
+	return aarch64_insn_encode_immediate(AARCH64_INSN_IMM_12, insn,
+					     offset >> shift);
+}
+
 u32 aarch64_insn_gen_load_store_pair(enum aarch64_insn_register reg1,
 				     enum aarch64_insn_register reg2,
 				     enum aarch64_insn_register base,
