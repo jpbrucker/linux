@@ -66,6 +66,7 @@ struct jit_ctx {
 
 static inline void emit(const u32 insn, struct jit_ctx *ctx)
 {
+	WARN_ON(insn == AARCH64_BREAK_FAULT);
 	if (ctx->image != NULL)
 		ctx->image[ctx->idx] = cpu_to_le32(insn);
 
