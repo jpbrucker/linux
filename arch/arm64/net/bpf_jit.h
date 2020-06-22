@@ -66,6 +66,20 @@
 #define A64_STR64(Xt, Xn, Xm) A64_LS_REG(Xt, Xn, Xm, 64, STORE)
 #define A64_LDR64(Xt, Xn, Xm) A64_LS_REG(Xt, Xn, Xm, 64, LOAD)
 
+/* Load/store register (immediate offset) */
+#define A64_LS_IMM(Rt, Rn, offset, size, type) \
+	aarch64_insn_gen_load_store_imm(Rt, Rn, offset, \
+		AARCH64_INSN_SIZE_##size, \
+		AARCH64_INSN_LDST_##type##_REG_OFFSET)
+#define A64_STRB_IMM(Wt, Xn, offset)  A64_LS_IMM(Wt, Xn, offset, 8, STORE)
+#define A64_LDRB_IMM(Wt, Xn, offset)  A64_LS_IMM(Wt, Xn, offset, 8, LOAD)
+#define A64_STRH_IMM(Wt, Xn, offset)  A64_LS_IMM(Wt, Xn, offset, 16, STORE)
+#define A64_LDRH_IMM(Wt, Xn, offset)  A64_LS_IMM(Wt, Xn, offset, 16, LOAD)
+#define A64_STR32_IMM(Wt, Xn, offset) A64_LS_IMM(Wt, Xn, offset, 32, STORE)
+#define A64_LDR32_IMM(Wt, Xn, offset) A64_LS_IMM(Wt, Xn, offset, 32, LOAD)
+#define A64_STR64_IMM(Xt, Xn, offset) A64_LS_IMM(Xt, Xn, offset, 64, STORE)
+#define A64_LDR64_IMM(Xt, Xn, offset) A64_LS_IMM(Xt, Xn, offset, 64, LOAD)
+
 /* Load/store register pair */
 #define A64_LS_PAIR(Rt, Rt2, Rn, offset, ls, type) \
 	aarch64_insn_gen_load_store_pair(Rt, Rt2, Rn, offset, \
