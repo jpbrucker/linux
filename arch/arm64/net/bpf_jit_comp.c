@@ -1559,6 +1559,9 @@ int arch_prepare_bpf_trampoline(void *image, void *image_end,
 		return -EFAULT;
 
 	bpf_flush_icache(ctx.image, ctx.image + ctx.idx);
+	pr_debug("%s: Trampoline is %zu bytes\n", __func__, tramp_size);
+	print_hex_dump_debug("", DUMP_PREFIX_ADDRESS, 16, 4, ctx.image, ctx.idx
+			     * AARCH64_INSN_SIZE, false);
 	return tramp_size;
 }
 #endif

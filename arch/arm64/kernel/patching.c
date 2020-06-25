@@ -139,6 +139,8 @@ int aarch64_insn_update(unsigned long addr, u32 old, u32 new, bool validate)
 		}
 
 		if (replaced != old) {
+			pr_err("#### %s addr %lx replaced %x != old %x, new %x\n",
+			       __func__, addr, replaced, old, new);
 			ret = -EINVAL;
 			goto out_unlock;
 		}
