@@ -953,7 +953,7 @@ emit_cond_jmp:
 		break;
 
 	default:
-		pr_err_once("unknown opcode %02x\n", code);
+		pr_err_ratelimited("[%2d] unknown opcode %02x\n", i, code);
 		return -EINVAL;
 	}
 
