@@ -233,4 +233,15 @@
 #define A64_BTI_J  A64_HINT(AARCH64_INSN_HINT_BTIJ)
 #define A64_BTI_JC A64_HINT(AARCH64_INSN_HINT_BTIJC)
 
+/*
+ * Each trampoline is 0x800 bytes.
+ * ... or should be. FIXME: dissociate trampoline size from PAGE_SIZE. We don't
+ * need 32k when using 64kB page sizes.
+ */
+#define BPF_TRAMPOLINE_SHIFT	(PAGE_SHIFT - 1)
+
+#ifndef __ASSEMBLY__
+extern void bpf_tramp_call(void);
+#endif
+
 #endif /* _BPF_JIT_H */

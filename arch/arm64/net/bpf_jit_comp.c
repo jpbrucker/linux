@@ -18,6 +18,7 @@
 #include <asm/cacheflush.h>
 #include <asm/debug-monitors.h>
 #include <asm/insn.h>
+#include <asm/patching.h>
 #include <asm/set_memory.h>
 
 #include "bpf_jit.h"
@@ -1172,6 +1173,208 @@ out:
 }
 
 #ifdef CONFIG_ARM64_BPF_TRAMPOLINE
+static unsigned long bpf_arch_find_branch(unsigned long pc)
+{
+	int i, ret;
+	u32 insn, expected;
+
+	/*
+	 * ftrace should have generated the right prologue (mov x9, lr) at boot
+	 * time (see ftrace_init_nop()). Find it.
+	 */
+	expected = aarch64_insn_gen_move_reg(AARCH64_INSN_REG_9,
+					     AARCH64_INSN_REG_LR,
+					     AARCH64_INSN_VARIANT_64BIT);
+
+
+	for (i = 0; i < 3; i++, pc += AARCH64_INSN_SIZE) {
+		ret = aarch64_insn_read((void *)pc, &insn);
+		if (ret) {
+			pr_err("#### %s: could not read 0x%lx\n", __func__, pc);
+			return 0;
+		}
+		pr_debug("#### %s: %x %x\n", __func__, insn, expected);
+
+		if (insn == expected) {
+			/* The branch/nop is the next instruction */
+			return pc;
+		}
+
+		/*
+		 * HACK: is it one of ours? x16 is a giveaway.
+		 */
+		if (aarch64_insn_is_movz(insn) && (insn & 0x1f) == 16)
+			return pc;
+
+		/*
+		 * Otherwise it may be a BTI landing pad or PAC. Keep looking.
+		 * I'm being excessively lazy here. There is a correct way to do
+		 * this, by inspecting the mcount records.
+		 */
+	}
+
+	pr_debug("#### %s: cannot patch at 0x%lx\n", __func__, pc);
+	return 0;
+}
+
+static u32 bpf_tramp_to_insn(void *trampoline_addr)
+{
+	int idx;
+	unsigned long addr = (unsigned long)trampoline_addr;
+
+	if (WARN_ON(addr < BPF_JIT_REGION_START || addr >= BPF_JIT_REGION_END)) {
+		pr_err("#### %s: Address 0x%lx outside JIT region\n", __func__,
+		       addr);
+		return AARCH64_BREAK_FAULT;
+	}
+
+	if (WARN_ON(!IS_ALIGNED(addr, 1UL << BPF_TRAMPOLINE_SHIFT))) {
+		pr_err("#### %s: address 0x%lx is not aligned\n", __func__,
+		       addr);
+		return AARCH64_BREAK_FAULT;
+	}
+
+	idx = (addr - BPF_JIT_REGION_START) >> BPF_TRAMPOLINE_SHIFT;
+	return A64_MOVZ(1, A64_R(16), idx, 0);
+}
+
+struct insn_update {
+	void *addr;
+	unsigned int old, new;
+};
+
+#define MAX_UPDATE_INSNS 2
+static int bpf_update_instructions(struct insn_update *updates, int nr)
+{
+	int i, ret;
+	void *addr;
+	int nr_updates = 0;
+	u32 insn, old, new;
+	void *addrs[MAX_UPDATE_INSNS];
+	u32 insns[MAX_UPDATE_INSNS];
+
+	if (nr > MAX_UPDATE_INSNS)
+		return -EINVAL;
+
+	/*
+	 * First check that all existing instructions are expected. Don't want
+	 * to start patching right away only to realize later that we created an
+	 * invalid path.
+	 */
+	for (i = 0; i < nr; i++) {
+		old = updates[i].old;
+		new = updates[i].new;
+		addr = updates[i].addr;
+
+		if (old == AARCH64_BREAK_FAULT || new == AARCH64_BREAK_FAULT)
+			return -EINVAL;
+
+		ret = aarch64_insn_read(addr, &insn);
+		if (ret) {
+			pr_err("#### %s: insn read fault at %px\n", __func__,
+			       addr);
+			return ret;
+		}
+		if (insn != old) {
+			pr_err("#### %s: unexpected insn 0x%x != 0x%x at %px\n",
+			       __func__, insn, old, addr);
+			return -EINVAL;
+		}
+
+		if (!new)
+			continue;
+		addrs[nr_updates] = addr;
+		insns[nr_updates] = new;
+		nr_updates++;
+	}
+
+	/* Stop the world and perform these updates. */
+	return aarch64_insn_patch_text(addrs, insns, nr_updates);
+}
+
+/*
+ * The trampoline code is somewhere within the 128M JIT region, aligned on
+ * PAGE_SIZE / 2, so we have a set of 64k possible entry points. The trampoline
+ * is constructed specially for this function, so we don't need a BLR, and so we
+ * don't have to save LR. The first patch instruction specifies the trampoline
+ * frame number, and the second one jumps to an intermediate trampoline, like
+ * so:
+ *	mov x16, #idx
+ *	b bpf_tramp_call
+ *
+ * bpf_tramp_call (conceptually):
+ *	mov x17, BFP_JIT_REGION_START
+ *	add x16, x16, x17, lsl #BPF_TRAMPOLINE_SHIFT
+ *	br x16
+ */
+int bpf_arch_text_poke(void *ptr, enum bpf_text_poke_type t,
+		       enum bpf_text_poke_location l, void *old_addr,
+		       void *new_addr)
+{
+	unsigned long pc = (unsigned long)ptr;
+	struct insn_update updates[2] = {};
+	u32 br_tramp, mov_x9_lr, nop;
+
+	pr_debug("#### %s(%px %d %px %px)\n", __func__, ptr, t, old_addr,
+		 new_addr);
+
+	if (WARN_ON((new_addr && !IS_BPF_TEXT(new_addr)) ||
+		    (old_addr && !IS_BPF_TEXT(old_addr))))
+		return -EINVAL;
+
+	/*
+	 * Only patch core text for now. Poking modules isn't supported nor
+	 * planned, but we'll support poking BPF programs at some point.
+	 */
+	if (!core_kernel_text(pc))
+		return -EINVAL;
+
+	pc = bpf_arch_find_branch(pc);
+	if (!pc)
+		return -EINVAL;
+	ptr = (void *)pc;
+
+	nop = aarch64_insn_gen_nop();
+	br_tramp = aarch64_insn_gen_branch_imm(pc + AARCH64_INSN_SIZE,
+					       (unsigned long)&bpf_tramp_call,
+					       AARCH64_INSN_BRANCH_NOLINK);
+	mov_x9_lr = aarch64_insn_gen_move_reg(AARCH64_INSN_REG_9,
+					      AARCH64_INSN_REG_LR,
+					      AARCH64_INSN_VARIANT_64BIT);
+
+	if (new_addr && old_addr) {
+		updates[0].addr = ptr;
+		updates[0].old = bpf_tramp_to_insn(old_addr);
+		updates[0].new = bpf_tramp_to_insn(new_addr);
+
+		/* No change, but check that it is what we expect. */
+		updates[1].addr = ptr + AARCH64_INSN_SIZE;
+		updates[1].old = br_tramp;
+	} else if (new_addr) {
+		updates[0].addr = ptr;
+		updates[0].old = mov_x9_lr;
+		updates[0].new = bpf_tramp_to_insn(new_addr);
+
+		updates[1].addr = ptr + AARCH64_INSN_SIZE;
+		updates[1].old = nop;
+		updates[1].new = br_tramp;
+	} else if (old_addr) {
+		/* Remove the branch first */
+		updates[0].addr = ptr + AARCH64_INSN_SIZE;
+		updates[0].old = br_tramp;
+		updates[0].new = nop;
+
+		updates[1].addr = ptr;
+		updates[1].old = bpf_tramp_to_insn(old_addr);
+		updates[1].new = mov_x9_lr;
+	} else {
+		WARN_ON(1);
+		return -EINVAL;
+	}
+
+	return bpf_update_instructions(updates, 2);
+}
+
 /* Up to 8 arguments in x0-x7 */
 #define BPF_TRAMP_MAX_ARGS 8
 

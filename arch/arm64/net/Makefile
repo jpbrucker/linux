@@ -3,3 +3,4 @@
 # ARM64 networking code
 #
 obj-$(CONFIG_BPF_JIT) += bpf_jit_comp.o
+obj-$(CONFIG_ARM64_BPF_TRAMPOLINE) += bpf_trampoline.o
