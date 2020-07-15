@@ -26,6 +26,7 @@
 #include "bpf_iter_bpf_sk_storage_map.skel.h"
 #include "bpf_iter_test_kern5.skel.h"
 #include "bpf_iter_test_kern6.skel.h"
+#include "bpf_iter_exception.skel.h"
 
 static int duration;
 
@@ -1240,6 +1241,20 @@ out:
 	bpf_iter_task_vma__destroy(skel);
 }
 
+static void test_exception(void)
+{
+	struct bpf_iter_exception *skel;
+
+	skel = bpf_iter_exception__open_and_load();
+	if (CHECK(!skel, "bpf_iter_exception__open_and_load",
+		  "skeleton open_and_load failed\n"))
+		return;
+
+	do_dummy_read(skel->progs.dump_ipv6_route);
+
+	bpf_iter_exception__destroy(skel);
+}
+
 void test_bpf_iter(void)
 {
 	if (test__start_subtest("btf_id_or_null"))
@@ -1300,4 +1315,6 @@ void test_bpf_iter(void)
 		test_rdonly_buf_out_of_bound();
 	if (test__start_subtest("buf-neg-offset"))
 		test_buf_neg_offset();
+	if (test__start_subtest("exception"))
+		test_exception();
 }
