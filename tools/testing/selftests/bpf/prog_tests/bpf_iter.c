@@ -42,11 +42,16 @@ static void test_btf_id_or_null(void)
 	}
 }
 
-static void do_dummy_read(struct bpf_program *prog)
+static void do_prog_read(struct bpf_program *prog, const char *expected)
 {
+	int err, iter_fd, len, buf_len;
 	struct bpf_link *link;
-	char buf[16] = {};
-	int iter_fd, len;
+	char *buf;
+
+	buf_len = expected ? strlen(expected) : 16;
+	buf = calloc(1, buf_len);
+	if (CHECK(!buf, "calloc", "buffer alloc failed\n"))
+		return;
 
 	link = bpf_program__attach_iter(prog, NULL);
 	if (!ASSERT_OK_PTR(link, "attach_iter"))
@@ -57,9 +62,18 @@ static void do_dummy_read(struct bpf_program *prog)
 		goto free_link;
 
 	/* not check contents, but ensure read() ends without error */
-	while ((len = read(iter_fd, buf, sizeof(buf))) > 0)
-		;
+	while ((len = read(iter_fd, buf, buf_len)) > 0) {
+		if (expected)
+			break;
+	}
 	CHECK(len < 0, "read", "read failed: %s\n", strerror(errno));
+	if (expected) {
+		CHECK(len != buf_len, "read", "read len %d != %d\n", len,
+		      buf_len);
+		err = strcmp(buf, expected);
+		CHECK(err, "read", "incorrect read result: buf %s, expected %s\n",
+		      buf, expected);
+	}
 
 	close(iter_fd);
 
@@ -81,6 +95,11 @@ static int read_fd_into_buffer(int fd, char *buf, int size)
 	} while (len > 0);
 
 	return len < 0 ? len : size - bufleft;
+}
+
+static void do_dummy_read(struct bpf_program *prog)
+{
+	do_prog_read(prog, NULL);
 }
 
 static void test_ipv6_route(void)
@@ -1251,6 +1270,7 @@ static void test_exception(void)
 		return;
 
 	do_dummy_read(skel->progs.dump_ipv6_route);
+	do_prog_read(skel->progs.dump_kthread_vm, "pid=2 vm=0 garbage=0\n");
 
 	bpf_iter_exception__destroy(skel);
 }
