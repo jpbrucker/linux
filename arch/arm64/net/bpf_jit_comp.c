@@ -212,12 +212,11 @@ static bool is_addsub_imm(u32 imm)
 	return !(imm & ~0xfff) || !(imm & ~0xfff000);
 }
 
+#define BTI_PROLOGUE_OFFSET IS_ENABLED(CONFIG_ARM64_BTI_KERNEL)
+#define TRAMP_PROLOGUE_OFFSET IS_ENABLED(CONFIG_ARM64_BPF_TRAMPOLINE)
+
 /* Tail call offset to jump into */
-#if IS_ENABLED(CONFIG_ARM64_BTI_KERNEL)
-#define PROLOGUE_OFFSET 8
-#else
-#define PROLOGUE_OFFSET 7
-#endif
+#define PROLOGUE_OFFSET (7 + BTI_PROLOGUE_OFFSET + TRAMP_PROLOGUE_OFFSET)
 
 static int build_prologue(struct jit_ctx *ctx, bool ebpf_from_cbpf)
 {
@@ -257,6 +256,10 @@ static int build_prologue(struct jit_ctx *ctx, bool ebpf_from_cbpf)
 	/* BTI landing pad */
 	if (IS_ENABLED(CONFIG_ARM64_BTI_KERNEL))
 		emit(A64_BTI_C, ctx);
+
+	/* Add patchable instruction */
+	if (IS_ENABLED(CONFIG_ARM64_BPF_TRAMPOLINE))
+		emit(aarch64_insn_gen_nop(), ctx);
 
 	/* Save FP and LR registers to stay align with ARM64 AAPCS */
 	emit(A64_PUSH(A64_FP, A64_LR, A64_SP), ctx);
@@ -1217,6 +1220,42 @@ static unsigned long bpf_arch_find_branch(unsigned long pc)
 	return 0;
 }
 
+#define IS_BPF_TEXT(addr) ((unsigned long)(addr) >= BPF_JIT_REGION_START && \
+			   (unsigned long)(addr) < BPF_JIT_REGION_END)
+
+static int bpf_prog_poke(unsigned long pc, enum bpf_text_poke_location l,
+			 void *old_addr, void *new_addr)
+{
+	int ret;
+	u32 old_insn, new_insn;
+
+	if (IS_ENABLED(CONFIG_ARM64_BTI_KERNEL))
+		pc += AARCH64_INSN_SIZE;
+
+	if (old_addr)
+		old_insn = aarch64_insn_gen_branch_imm(pc,
+						       (unsigned long)old_addr,
+						       AARCH64_INSN_BRANCH_NOLINK);
+	else
+		old_insn = aarch64_insn_gen_nop();
+
+	if (new_addr)
+		new_insn = aarch64_insn_gen_branch_imm(pc,
+						       (unsigned long)new_addr,
+						       AARCH64_INSN_BRANCH_NOLINK);
+	else
+		new_insn = aarch64_insn_gen_nop();
+
+	if (WARN_ON(old_insn == AARCH64_BREAK_FAULT ||
+		    new_insn == AARCH64_BREAK_FAULT))
+		return -EINVAL;
+
+	ret = aarch64_insn_update(pc, old_insn, new_insn, true);
+	if (ret)
+		pr_err("#### %s: insn update %d\n", __func__, ret);
+	return ret;
+}
+
 static u32 bpf_tramp_to_insn(void *trampoline_addr)
 {
 	int idx;
@@ -1322,10 +1361,9 @@ int bpf_arch_text_poke(void *ptr, enum bpf_text_poke_type t,
 		    (old_addr && !IS_BPF_TEXT(old_addr))))
 		return -EINVAL;
 
-	/*
-	 * Only patch core text for now. Poking modules isn't supported nor
-	 * planned, but we'll support poking BPF programs at some point.
-	 */
+	if (is_bpf_text_address(pc))
+		return bpf_prog_poke(pc, l, old_addr, new_addr);
+
 	if (!core_kernel_text(pc))
 		return -EINVAL;
 
@@ -1482,8 +1520,7 @@ static int gen_trampoline(struct jit_ctx *ctx, const struct btf_func_model *m,
 	const u8 tmp1_reg = bpf2a64[TMP_REG_1];
 	const u8 tmp2_reg = bpf2a64[TMP_REG_2];
 
-	unsigned long ret_address = (unsigned long)orig_call +
-		2 * AARCH64_INSN_SIZE;
+	unsigned long ret_address = (unsigned long)orig_call;
 
 	bool return_to_orig = false;
 	bool call_orig = (flags & BPF_TRAMP_F_CALL_ORIG);
@@ -1537,6 +1574,15 @@ static int gen_trampoline(struct jit_ctx *ctx, const struct btf_func_model *m,
 		ret_address += AARCH64_INSN_SIZE;
 		emit(A64_BTI_C, ctx);
 	}
+
+	/*
+	 * The BPF patch is just a branch, the kernel text patch is a mov + a
+	 * branch
+	 */
+	if (IS_BPF_TEXT(orig_call))
+		ret_address += AARCH64_INSN_SIZE;
+	else
+		ret_address += AARCH64_INSN_SIZE * 2;
 
 	/*
 	 * Initialize the trampoline frame:
@@ -1680,8 +1726,11 @@ static int gen_trampoline(struct jit_ctx *ctx, const struct btf_func_model *m,
 	if (ret)
 		goto out_free;
 
-	/* Restore fun() args if required, or discard them. */
-	offset = STACK_ALIGN(8 * (nr_args + 1));
+	/*
+	 * Restore fun() args if required, or discard them.
+	 * Stack pointer must be multiple of 16B.
+	 */
+	offset = round_up(8 * (nr_args + 1), 16);
 	for (i = 0; restore_regs && i < nr_args; i += 2) {
 		emit(A64_POP(stack[i], stack[i + 1], A64_SP), ctx);
 		offset -= 16;
