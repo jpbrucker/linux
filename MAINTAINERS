@@ -18483,6 +18483,7 @@ S:	Maintained
 F:	drivers/iommu/virtio/
 F:	include/linux/virt_iommu.h
 F:	include/uapi/linux/virtio_iommu.h
+F:	Documentation/devicetree/bindings/virtio/iommu.txt
 
 VIRTIO MEM DRIVER
 M:	David Hildenbrand <david@redhat.com>
