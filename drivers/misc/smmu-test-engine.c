@@ -2049,7 +2049,8 @@ static int smmute_run_selftest_memcpy(struct smmute_device *smmute,
 }
 
 static int smmute_run_simple_selftest(struct smmute_device *smmute,
-				      struct smmute_selftest *test)
+				      struct smmute_selftest *test,
+				      bool tlb_test)
 {
 	int ret;
 	void *addr_in, *addr_out;
@@ -2064,7 +2065,7 @@ static int smmute_run_simple_selftest(struct smmute_device *smmute,
 				      GFP_KERNEL);
 	if (!addr_out) {
 		ret = -ENOMEM;
-		goto err_free;
+		goto out_free;
 	}
 
 	test->iova_in	= dma_addr_in;
@@ -2073,8 +2074,8 @@ static int smmute_run_simple_selftest(struct smmute_device *smmute,
 	test->va_out	= addr_out;
 
 	ret = smmute_run_selftest_memcpy(smmute, test, false);
-	if (ret)
-		goto err_free;
+	if (ret || !tlb_test)
+		goto out_free;
 
 	/* Now retry the test with unmapped data */
 	dma_free_coherent(smmute->dev, test->size, addr_out, dma_addr_out);
@@ -2090,41 +2091,41 @@ static int smmute_run_simple_selftest(struct smmute_device *smmute,
 		dev_info(smmute->dev, "the following SMMU events are expected!\n");
 	ret = smmute_run_selftest_memcpy(smmute, test, true);
 	if (ret)
-		goto err_free;
+		goto out_free;
 
 	/* Remap and retry */
 	addr_out = dma_alloc_coherent(smmute->dev, test->size, &dma_addr_out,
 				      GFP_KERNEL);
 	if (!addr_out) {
 		ret = -ENOMEM;
-		goto err_free;
+		goto out_free;
 	}
 	test->va_out	= addr_out;
 	test->iova_out	= dma_addr_out;
 
 	ret = smmute_run_selftest_memcpy(smmute, test, false);
 	if (ret)
-		goto err_free;
+		goto out_free;
 
 	dma_free_coherent(smmute->dev, test->size, addr_in, dma_addr_in);
 	test->va_in = addr_in = NULL;
 
 	ret = smmute_run_selftest_memcpy(smmute, test, true);
 	if (ret)
-		goto err_free;
+		goto out_free;
 
 	addr_in = dma_alloc_coherent(smmute->dev, test->size, &dma_addr_in,
 				     GFP_KERNEL);
 	if (!addr_in) {
 		ret = -ENOMEM;
-		goto err_free;
+		goto out_free;
 	}
 	test->va_in	= addr_in;
 	test->iova_in	= dma_addr_in;
 
 	ret = smmute_run_selftest_memcpy(smmute, test, false);
 
-err_free:
+out_free:
 	if (addr_in)
 		dma_free_coherent(smmute->dev, test->size, addr_in, dma_addr_in);
 	if (addr_out)
@@ -2293,8 +2294,9 @@ free_iovad:
 
 static int smmute_run_selftests(struct smmute_device *smmute)
 {
-	int i;
 	int ret;
+	int i = 1;
+	bool iommu_present = (iommu_get_domain_for_dev(smmute->dev) != NULL);
 	struct smmute_selftest tests[] = {
 		{
 			.size = 6 * PAGE_SIZE,
@@ -2319,15 +2321,20 @@ static int smmute_run_selftests(struct smmute_device *smmute)
 	};
 
 	dev_info(smmute->dev, "starting selftests...\n");
-	ret = smmute_run_simple_selftest(smmute, &tests[0]);
+	ret = smmute_run_simple_selftest(smmute, &tests[0], iommu_present);
 	if (ret) {
 		dev_err(smmute->dev, "test 0 failed\n");
-		return ret;
+		goto test_done;
+	}
+
+	if (!iommu_present) {
+		dev_info(smmute->dev, "no SMMU detected, exiting selftest\n");
+		goto test_done;
 	}
 
 	/* Specialized PASID tests */
 	iova_cache_get();
-	for (i = 1; i < ARRAY_SIZE(tests); i++) {
+	for (; i < ARRAY_SIZE(tests); i++) {
 		ret = smmute_run_selftest(smmute, &tests[i]);
 		if (ret) {
 			dev_err(smmute->dev, "test %d failed\n", i);
@@ -2336,6 +2343,7 @@ static int smmute_run_selftests(struct smmute_device *smmute)
 	}
 	iova_cache_put();
 
+test_done:
 	dev_info(smmute->dev, "%d/%lu complete, ret %d\n", i,
 		 ARRAY_SIZE(tests), ret);
 	return ret;
