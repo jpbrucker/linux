@@ -18,7 +18,7 @@ const volatile int batch_cnt = 0;
 long sample_val = 42;
 long dropped __attribute__((aligned(128))) = 0;
 
-SEC("fentry/__x64_sys_getpgid")
+SEC("fentry/" BPF_SYSCALL_PREFIX "sys_getpgid")
 int bench_perfbuf(void *ctx)
 {
 	__u64 *sample;

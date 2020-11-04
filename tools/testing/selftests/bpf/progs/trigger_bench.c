@@ -25,28 +25,28 @@ int BPF_PROG(bench_trigger_raw_tp, struct pt_regs *regs, long id)
 	return 0;
 }
 
-SEC("kprobe/__x64_sys_getpgid")
+SEC("kprobe/" BPF_SYSCALL_PREFIX "sys_getpgid")
 int bench_trigger_kprobe(void *ctx)
 {
 	__sync_add_and_fetch(&hits, 1);
 	return 0;
 }
 
-SEC("fentry/__x64_sys_getpgid")
+SEC("fentry/" BPF_SYSCALL_PREFIX "sys_getpgid")
 int bench_trigger_fentry(void *ctx)
 {
 	__sync_add_and_fetch(&hits, 1);
 	return 0;
 }
 
-SEC("fentry.s/__x64_sys_getpgid")
+SEC("fentry.s/" BPF_SYSCALL_PREFIX "sys_getpgid")
 int bench_trigger_fentry_sleep(void *ctx)
 {
 	__sync_add_and_fetch(&hits, 1);
 	return 0;
 }
 
-SEC("fmod_ret/__x64_sys_getpgid")
+SEC("fmod_ret/" BPF_SYSCALL_PREFIX "sys_getpgid")
 int bench_trigger_fmodret(void *ctx)
 {
 	__sync_add_and_fetch(&hits, 1);
