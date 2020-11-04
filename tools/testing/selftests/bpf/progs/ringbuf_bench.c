@@ -30,7 +30,7 @@ static __always_inline long get_flags()
 	return sz >= wakeup_data_size ? BPF_RB_FORCE_WAKEUP : BPF_RB_NO_WAKEUP;
 }
 
-SEC("fentry/__x64_sys_getpgid")
+SEC("fentry/" BPF_SYSCALL_PREFIX "sys_getpgid")
 int bench_ringbuf(void *ctx)
 {
 	long *sample, flags;
