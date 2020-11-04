@@ -28,6 +28,19 @@
 	__attribute__((section(name), used))				    \
 	_Pragma("GCC diagnostic pop")					    \
 
+/*
+ * Some architectures prefix their syscall entry points.
+ */
+#ifdef __x86_64__
+#define BPF_SYSCALL_PREFIX "__x64_"
+#elif defined(__s390x__)
+#define BPF_SYSCALL_PREFIX "__s390x_"
+#elif defined(__aarch64__)
+#define BPF_SYSCALL_PREFIX "__arm64_"
+#else
+#define BPF_SYSCALL_PREFIX ""
+#endif
+
 /* Avoid 'linux/stddef.h' definition of '__always_inline'. */
 #undef __always_inline
 #define __always_inline inline __attribute__((always_inline))
