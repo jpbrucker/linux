@@ -258,6 +258,25 @@
 		msi-parent = <&its 0x10000>;
 	};
 
+	smmute@2bfe0000 {
+		compatible = "arm,smmute";
+		reg = <0x0 0x2bfe0000 0x0 0x20000>;
+
+		dma-coherent;
+		dma-can-stall;
+		pasid-num-bits = <20>;
+
+		/*
+		 * Arbitrary stream ID, written by the driver into the
+		 * privileged frame. This SID conflicts with the PCI BDF range,
+		 * but by default the SMMU on the model only supports 64k SIDs
+		 * so we can't set a SID > 0xffff. This BDF is not used in the
+		 * model.
+		 */
+		iommus = <&smmu 0xff00>;
+		msi-parent = <&its 0xff00>;
+	};
+
 	panel {
 		compatible = "arm,rtsm-display";
 		port {
