@@ -57,12 +57,19 @@ struct viommu_dev {
 	u32				probe_size;
 	u16				num_queues;
 	u8				boot_bypass;
+
+	bool				has_map:1;
 };
 
 struct viommu_mapping {
 	phys_addr_t			paddr;
 	struct interval_tree_node	iova;
 	u32				flags;
+};
+
+struct viommu_mm {
+	struct io_pgtable_ops		*ops;
+	struct viommu_domain		*domain;
 };
 
 struct viommu_domain {
@@ -72,12 +79,20 @@ struct viommu_domain {
 	unsigned int			id;
 	u32				map_flags;
 
+	/* Default address space when a table is bound */
+	struct viommu_mm		mm;
+
+	/* When no table is bound, use generic mappings */
 	spinlock_t			mappings_lock;
 	struct rb_root_cached		mappings;
 
 	unsigned long			nr_endpoints;
 	bool				bypass;
 };
+
+#define vdev_for_each_id(i, eid, vdev)					\
+	for (i = 0; i < vdev->dev->iommu->fwspec->num_ids &&		\
+		({ eid = vdev->dev->iommu->fwspec->ids[i]; 1; }); i++)
 
 struct viommu_endpoint {
 	struct device			*dev;
@@ -836,12 +851,43 @@ static void viommu_domain_free(struct iommu_domain *domain)
 	kfree(vdomain);
 }
 
+static int viommu_simple_attach(struct viommu_domain *vdomain,
+				struct viommu_endpoint *vdev)
+{
+	int i, eid, ret;
+	struct virtio_iommu_req_attach req = {
+		.head.type	= VIRTIO_IOMMU_T_ATTACH,
+		.domain		= cpu_to_le32(vdomain->id),
+	};
+
+	if (!vdomain->viommu->has_map)
+		return -ENODEV;
+
+	if (vdomain->bypass)
+		req.flags |= cpu_to_le32(VIRTIO_IOMMU_ATTACH_F_BYPASS);
+
+	vdev_for_each_id(i, eid, vdev) {
+		req.endpoint = cpu_to_le32(eid);
+
+		ret = viommu_send_req_sync(vdomain->viommu, &req, sizeof(req));
+		if (ret)
+			return ret;
+	}
+
+	if (!vdomain->nr_endpoints) {
+		/*
+		 * This endpoint is the first to be attached to the domain.
+		 * Replay existing mappings if any (e.g. SW MSI).
+		 */
+		ret = viommu_replay_mappings(vdomain);
+	}
+
+	return ret;
+}
+
 static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 {
-	int i;
 	int ret = 0;
-	struct virtio_iommu_req_attach req;
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 	struct viommu_endpoint *vdev = dev_iommu_priv_get(dev);
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
 
@@ -875,28 +921,9 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 	if (vdev->vdomain)
 		vdev->vdomain->nr_endpoints--;
 
-	req = (struct virtio_iommu_req_attach) {
-		.head.type	= VIRTIO_IOMMU_T_ATTACH,
-		.domain		= cpu_to_le32(vdomain->id),
-	};
-
-	if (vdomain->bypass)
-		req.flags |= cpu_to_le32(VIRTIO_IOMMU_ATTACH_F_BYPASS);
-
-	for (i = 0; i < fwspec->num_ids; i++) {
-		req.endpoint = cpu_to_le32(fwspec->ids[i]);
-
-		ret = viommu_send_req_sync(vdomain->viommu, &req, sizeof(req));
-		if (ret)
-			return ret;
-	}
-
-	if (!vdomain->nr_endpoints) {
-		/*
-		 * This endpoint is the first to be attached to the domain.
-		 * Replay existing mappings (e.g. SW MSI).
-		 */
-		ret = viommu_replay_mappings(vdomain);
+	if (!vdomain->mm.ops) {
+		/* If we couldn't bind any table, use the mapping tree */
+		ret = viommu_simple_attach(vdomain, vdev);
 		if (ret)
 			return ret;
 	}
@@ -1324,6 +1351,8 @@ static int viommu_probe(struct virtio_device *vdev)
 	virtio_cread_le_feature(vdev, VIRTIO_IOMMU_F_MQ,
 				struct virtio_iommu_config, num_queues,
 				&viommu->num_queues);
+
+	viommu->has_map = virtio_has_feature(vdev, VIRTIO_IOMMU_F_MAP_UNMAP);
 
 	viommu->geometry = (struct iommu_domain_geometry) {
 		.aperture_start	= input_start,
