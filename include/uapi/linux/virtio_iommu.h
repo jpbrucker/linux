@@ -2,7 +2,7 @@
 /*
  * Virtio-iommu definition v0.12
  *
- * Copyright (C) 2019 Arm Ltd.
+ * Copyright (C) 2019-2021 Arm Ltd.
  */
 #ifndef _UAPI_LINUX_VIRTIO_IOMMU_H
 #define _UAPI_LINUX_VIRTIO_IOMMU_H
@@ -119,6 +119,12 @@ struct virtio_iommu_req_unmap {
 
 #define VIRTIO_IOMMU_PROBE_T_NONE		0
 #define VIRTIO_IOMMU_PROBE_T_RESV_MEM		1
+#define VIRTIO_IOMMU_PROBE_T_PAGE_SIZE_MASK	2
+#define VIRTIO_IOMMU_PROBE_T_INPUT_RANGE	3
+#define VIRTIO_IOMMU_PROBE_T_OUTPUT_SIZE	4
+#define VIRTIO_IOMMU_PROBE_T_PASID_SIZE		5
+#define VIRTIO_IOMMU_PROBE_T_PAGE_TABLE_FMT	6
+#define VIRTIO_IOMMU_PROBE_T_PASID_TABLE_FMT	7
 
 #define VIRTIO_IOMMU_PROBE_T_MASK		0xfff
 
@@ -136,6 +142,42 @@ struct virtio_iommu_probe_resv_mem {
 	__u8					reserved[3];
 	__le64					start;
 	__le64					end;
+};
+
+struct virtio_iommu_probe_page_size_mask {
+	struct virtio_iommu_probe_property	head;
+	__u8					reserved[4];
+	__le64					mask;
+};
+
+struct virtio_iommu_probe_input_range {
+	struct virtio_iommu_probe_property	head;
+	__u8					reserved[4];
+	__le64					start;
+	__le64					end;
+};
+
+struct virtio_iommu_probe_output_size {
+	struct virtio_iommu_probe_property	head;
+	__u8					bits;
+	__u8					reserved[3];
+};
+
+struct virtio_iommu_probe_pasid_size {
+	struct virtio_iommu_probe_property	head;
+	__u8					bits;
+	__u8					reserved[3];
+};
+
+/* Arm LPAE page table format */
+#define VIRTIO_IOMMU_FOMRAT_PGTF_ARM_LPAE	1
+/* Arm smmu-v3 type PASID table format */
+#define VIRTIO_IOMMU_FORMAT_PSTF_ARM_SMMU_V3	2
+
+struct virtio_iommu_probe_table_format {
+	struct virtio_iommu_probe_property	head;
+	__le16					format;
+	__u8					reserved[2];
 };
 
 struct virtio_iommu_req_probe {
