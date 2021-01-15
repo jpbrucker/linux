@@ -84,6 +84,17 @@ struct viommu_endpoint {
 	struct viommu_dev		*viommu;
 	struct viommu_domain		*vdomain;
 	struct list_head		resv_regions;
+
+	/* properties of the physical IOMMU */
+	u64				pgsize_bitmap;
+	u64				input_start;
+	u64				input_end;
+	u8				output_bits;
+	u8				pasid_bits;
+	/* Preferred PASID table format */
+	void				*pstf;
+	/* Preferred page table format */
+	void				*pgtf;
 };
 
 struct viommu_request {
@@ -533,6 +544,72 @@ static int viommu_add_resv_mem(struct viommu_endpoint *vdev,
 	return 0;
 }
 
+static int viommu_add_pgsize_mask(struct viommu_endpoint *vdev,
+				  struct virtio_iommu_probe_page_size_mask *prop,
+				  size_t len)
+{
+	if (len < sizeof(*prop))
+		return -EINVAL;
+	vdev->pgsize_bitmap = le64_to_cpu(prop->mask);
+	return 0;
+}
+
+static int viommu_add_input_range(struct viommu_endpoint *vdev,
+				  struct virtio_iommu_probe_input_range *prop,
+				  size_t len)
+{
+	if (len < sizeof(*prop))
+		return -EINVAL;
+	vdev->input_start	= le64_to_cpu(prop->start);
+	vdev->input_end		= le64_to_cpu(prop->end);
+	return 0;
+}
+
+static int viommu_add_output_size(struct viommu_endpoint *vdev,
+				  struct virtio_iommu_probe_output_size *prop,
+				  size_t len)
+{
+	if (len < sizeof(*prop))
+		return -EINVAL;
+	vdev->output_bits = prop->bits;
+	return 0;
+}
+
+static int viommu_add_pasid_size(struct viommu_endpoint *vdev,
+				 struct virtio_iommu_probe_pasid_size *prop,
+				 size_t len)
+{
+	if (len < sizeof(*prop))
+		return -EINVAL;
+	vdev->pasid_bits = prop->bits;
+	return 0;
+}
+
+static int viommu_add_pgtf(struct viommu_endpoint *vdev, void *pgtf, size_t len)
+{
+	/* Select the first page table format available */
+	if (len < sizeof(struct virtio_iommu_probe_table_format) || vdev->pgtf)
+		return -EINVAL;
+
+	vdev->pgtf = kmemdup(pgtf, len, GFP_KERNEL);
+	if (!vdev->pgtf)
+		return -ENOMEM;
+
+	return 0;
+}
+
+static int viommu_add_pstf(struct viommu_endpoint *vdev, void *pstf, size_t len)
+{
+	if (len < sizeof(struct virtio_iommu_probe_table_format) || vdev->pstf)
+		return -EINVAL;
+
+	vdev->pstf = kmemdup(pstf, len, GFP_KERNEL);
+	if (!vdev->pstf)
+		return -ENOMEM;
+
+	return 0;
+}
+
 static int viommu_probe_endpoint(struct viommu_dev *viommu, struct device *dev)
 {
 	int ret;
@@ -569,11 +646,30 @@ static int viommu_probe_endpoint(struct viommu_dev *viommu, struct device *dev)
 
 	while (type != VIRTIO_IOMMU_PROBE_T_NONE &&
 	       cur < viommu->probe_size) {
+		void *value = prop;
 		len = le16_to_cpu(prop->length) + sizeof(*prop);
 
 		switch (type) {
 		case VIRTIO_IOMMU_PROBE_T_RESV_MEM:
-			ret = viommu_add_resv_mem(vdev, (void *)prop, len);
+			ret = viommu_add_resv_mem(vdev, value, len);
+			break;
+		case VIRTIO_IOMMU_PROBE_T_PAGE_SIZE_MASK:
+			ret = viommu_add_pgsize_mask(vdev, value, len);
+			break;
+		case VIRTIO_IOMMU_PROBE_T_INPUT_RANGE:
+			ret = viommu_add_input_range(vdev, value, len);
+			break;
+		case VIRTIO_IOMMU_PROBE_T_OUTPUT_SIZE:
+			ret = viommu_add_output_size(vdev, value, len);
+			break;
+		case VIRTIO_IOMMU_PROBE_T_PASID_SIZE:
+			ret = viommu_add_pasid_size(vdev, value, len);
+			break;
+		case VIRTIO_IOMMU_PROBE_T_PAGE_TABLE_FMT:
+			ret = viommu_add_pgtf(vdev, value, len);
+			break;
+		case VIRTIO_IOMMU_PROBE_T_PASID_TABLE_FMT:
+			ret = viommu_add_pstf(vdev, value, len);
 			break;
 		default:
 			dev_err(dev, "unknown viommu prop 0x%x\n", type);
@@ -1046,6 +1142,8 @@ static struct iommu_device *viommu_probe_device(struct device *dev)
 
 err_free_dev:
 	iommu_put_resv_regions(dev, &vdev->resv_regions);
+	kfree(vdev->pstf);
+	kfree(vdev->pgtf);
 	kfree(vdev);
 
 	return ERR_PTR(ret);
@@ -1066,6 +1164,9 @@ static void viommu_release_device(struct device *dev)
 
 	viommu_detach_dev(vdev);
 	iommu_put_resv_regions(dev, &vdev->resv_regions);
+
+	kfree(vdev->pstf);
+	kfree(vdev->pgtf);
 	kfree(vdev);
 }
 
