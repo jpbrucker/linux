@@ -12,6 +12,7 @@
 #include <linux/freezer.h>
 #include <linux/interval_tree.h>
 #include <linux/iommu.h>
+#include <linux/io-pgtable.h>
 #include <linux/module.h>
 #include <linux/of_platform.h>
 #include <linux/pci.h>
@@ -68,6 +69,8 @@ struct viommu_mapping {
 };
 
 struct viommu_mm {
+	int				pasid;
+	u64				archid;
 	struct io_pgtable_ops		*ops;
 	struct viommu_domain		*domain;
 };
@@ -768,6 +771,79 @@ static void viommu_event_handler(struct virtqueue *vq)
 	virtqueue_kick(vq);
 }
 
+/* PASID and pgtable APIs */
+
+static void __viommu_flush_pasid_tlb_all(struct viommu_domain *vdomain,
+					 int pasid, u64 arch_id, int type)
+{
+	struct virtio_iommu_req_invalidate req = {
+		.head.type	= VIRTIO_IOMMU_T_INVALIDATE,
+		.inv_gran	= cpu_to_le16(VIRTIO_IOMMU_INVAL_G_PASID),
+		.flags		= cpu_to_le16(VIRTIO_IOMMU_INVAL_F_PASID |
+					      VIRTIO_IOMMU_INVAL_F_ARCHID),
+		.inv_type	= cpu_to_le16(type),
+
+		.domain		= cpu_to_le32(vdomain->id),
+		.pasid		= cpu_to_le32(pasid),
+		.archid		= cpu_to_le64(arch_id),
+	};
+
+	if (viommu_send_req_sync(vdomain->viommu, &req, sizeof(req)))
+		pr_debug("could not send invalidate request\n");
+}
+
+static void viommu_flush_tlb_add(struct iommu_iotlb_gather *gather,
+				 unsigned long iova, size_t granule,
+				 void *cookie)
+{
+	struct viommu_mm *viommu_mm = cookie;
+	struct viommu_domain *vdomain = viommu_mm->domain;
+	struct iommu_domain *domain = &vdomain->domain;
+
+	iommu_iotlb_gather_add_page(domain, gather, iova, granule);
+}
+
+static void viommu_flush_tlb_walk(unsigned long iova, size_t size,
+				  size_t granule, void *cookie)
+{
+	struct viommu_mm *viommu_mm = cookie;
+	struct viommu_domain *vdomain = viommu_mm->domain;
+	struct virtio_iommu_req_invalidate req = {
+		.head.type	= VIRTIO_IOMMU_T_INVALIDATE,
+		.inv_gran	= cpu_to_le16(VIRTIO_IOMMU_INVAL_G_VA),
+		.inv_type	= cpu_to_le16(VIRTIO_IOMMU_INV_T_IOTLB),
+		.flags		= cpu_to_le16(VIRTIO_IOMMU_INVAL_F_ARCHID),
+
+		.domain		= cpu_to_le32(vdomain->id),
+		.pasid		= cpu_to_le32(viommu_mm->pasid),
+		.archid		= cpu_to_le64(viommu_mm->archid),
+		.virt_start	= cpu_to_le64(iova),
+		.nr_pages	= cpu_to_le64(size / granule),
+		.granule	= ilog2(granule),
+	};
+
+	if (viommu_send_req_sync(vdomain->viommu, &req, sizeof(req)))
+		pr_err("could not send invalidate request\n");
+}
+
+static void viommu_flush_tlb_all(void *cookie)
+{
+	struct viommu_mm *viommu_mm = cookie;
+
+	if (!viommu_mm->archid)
+		return;
+
+	__viommu_flush_pasid_tlb_all(viommu_mm->domain, viommu_mm->pasid,
+				     viommu_mm->archid,
+				     VIRTIO_IOMMU_INV_T_IOTLB);
+}
+
+static struct iommu_flush_ops viommu_flush_ops = {
+	.tlb_flush_all		= viommu_flush_tlb_all,
+	.tlb_flush_walk		= viommu_flush_tlb_walk,
+	.tlb_add_page		= viommu_flush_tlb_add,
+};
+
 /* IOMMU API */
 
 static struct iommu_domain *viommu_domain_alloc(unsigned type)
@@ -1080,14 +1156,41 @@ static void viommu_iotlb_sync(struct iommu_domain *domain,
 {
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
 
-	/*
-	 * sync() without unmap() first can happen, for example when rolling
-	 * back from a failed map() that didn't create any mapping.
-	 */
-	if (!gather->iommu_cookie)
-		gather->iommu_cookie = viommu_get_req_vq(vdomain->viommu);
+	if (vdomain->mm.ops) {
+		u8 granule;
+		u64 nr_pages;
+		struct virtio_iommu_req_invalidate req;
 
-	viommu_sync_req(vdomain->viommu, gather->iommu_cookie);
+		if (!gather->pgsize)
+			return;
+
+		granule = ilog2(gather->pgsize);
+		nr_pages = (gather->end - gather->start + 1) >> granule;
+		req = (struct virtio_iommu_req_invalidate) {
+			.head.type	= VIRTIO_IOMMU_T_INVALIDATE,
+			.inv_gran	= cpu_to_le16(VIRTIO_IOMMU_INVAL_G_VA),
+			.inv_type	= cpu_to_le16(VIRTIO_IOMMU_INV_T_IOTLB),
+			.flags		= cpu_to_le16(VIRTIO_IOMMU_INVAL_F_ARCHID |
+						      VIRTIO_IOMMU_INVAL_F_LEAF),
+			.domain		= cpu_to_le32(vdomain->id),
+			.pasid		= cpu_to_le32(vdomain->mm.pasid),
+			.archid		= cpu_to_le64(vdomain->mm.archid),
+			.virt_start	= cpu_to_le64(gather->start),
+			.nr_pages	= cpu_to_le64(nr_pages),
+			.granule	= granule
+		};
+
+		if (viommu_send_req_sync(vdomain->viommu, &req, sizeof(req)))
+			pr_err("could not send invalidate request\n");
+	} else {
+		/*
+		 * sync() without unmap() first can happen, for example when rolling
+		 * back from a failed map() that didn't create any mapping.
+		 */
+		if (!gather->iommu_cookie)
+			gather->iommu_cookie = viommu_get_req_vq(vdomain->viommu);
+		viommu_sync_req(vdomain->viommu, gather->iommu_cookie);
+	}
 }
 
 static void viommu_get_resv_regions(struct device *dev, struct list_head *head)
