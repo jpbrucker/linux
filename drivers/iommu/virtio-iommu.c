@@ -659,6 +659,31 @@ static void viommu_domain_free(struct iommu_domain *domain)
 	kfree(vdomain);
 }
 
+static bool viommu_domain_compatible(struct viommu_domain *vdomain,
+				     struct viommu_endpoint *vdev)
+{
+	struct iommu_resv_region *resv;
+	struct interval_tree_node *node;
+
+	if (vdomain->viommu != vdev->viommu) {
+		dev_err(vdev->dev, "cannot attach to foreign vIOMMU\n");
+		return false;
+	}
+
+	/* Check resv regions against existing mappings */
+	list_for_each_entry(resv, &vdev->resv_regions, list) {
+		node = interval_tree_iter_first(&vdomain->mappings, resv->start,
+						resv->start + resv->length - 1);
+		if (node) {
+			dev_err(vdev->dev,
+				"cannot attach - resv region is mapped\n");
+			return false;
+		}
+	}
+
+	return true;
+}
+
 static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 {
 	int i;
@@ -675,8 +700,7 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 		 * owns it.
 		 */
 		ret = viommu_domain_finalise(vdev, domain);
-	} else if (vdomain->viommu != vdev->viommu) {
-		dev_err(dev, "cannot attach to foreign vIOMMU\n");
+	} else if (!viommu_domain_compatible(vdomain, vdev)) {
 		ret = -EXDEV;
 	}
 	mutex_unlock(&vdomain->mutex);
