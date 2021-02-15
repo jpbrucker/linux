@@ -374,6 +374,60 @@ static int viommu_del_mappings(struct viommu_domain *vdomain, u64 iova, u64 end)
 }
 
 /*
+ * Fill the domain with identity mappings, skipping the device's reserved
+ * regions.
+ */
+static int viommu_domain_map_identity(struct viommu_endpoint *vdev,
+				      struct viommu_domain *vdomain)
+{
+	int ret;
+	struct iommu_resv_region *resv;
+	u64 iova = 0, limit = ULLONG_MAX;
+	u32 flags = VIRTIO_IOMMU_MAP_F_READ | VIRTIO_IOMMU_MAP_F_WRITE;
+	unsigned long granule = 1UL << __ffs(vdomain->domain.pgsize_bitmap);
+
+	if (vdomain->domain.geometry.force_aperture) {
+		iova = ALIGN(vdomain->domain.geometry.aperture_start, granule);
+		limit = ALIGN_DOWN(vdomain->domain.geometry.aperture_end + 1,
+				   granule) - 1;
+	}
+
+	list_for_each_entry(resv, &vdev->resv_regions, list) {
+		u64 resv_start = ALIGN_DOWN(resv->start, granule);
+		u64 resv_end = ALIGN(resv->start + resv->length, granule) - 1;
+
+		if (resv_end < iova || resv_start > limit)
+			/* No overlap */
+			continue;
+
+		if (resv_start > iova) {
+			ret = viommu_add_mapping(vdomain, iova, resv_start - 1,
+						 (phys_addr_t)iova, flags);
+			if (ret)
+				goto out_unmap;
+		}
+
+		if (resv_end == ULLONG_MAX)
+			return 0;
+
+		iova = resv_end + 1;
+	}
+
+	if (iova > limit)
+		return 0;
+
+	ret = viommu_add_mapping(vdomain, iova, limit, (phys_addr_t)iova,
+				 flags);
+	if (ret)
+		goto out_unmap;
+	return 0;
+
+out_unmap:
+	viommu_del_mappings(vdomain, 0, iova);
+	return ret;
+}
+
+/*
  * viommu_replay_mappings - re-send MAP requests
  *
  * When reattaching a domain that was previously detached from all endpoints,
@@ -589,7 +643,9 @@ static struct iommu_domain *viommu_domain_alloc(unsigned type)
 {
 	struct viommu_domain *vdomain;
 
-	if (type != IOMMU_DOMAIN_UNMANAGED && type != IOMMU_DOMAIN_DMA)
+	if (type != IOMMU_DOMAIN_UNMANAGED &&
+	    type != IOMMU_DOMAIN_DMA &&
+	    type != IOMMU_DOMAIN_IDENTITY)
 		return NULL;
 
 	vdomain = kzalloc(sizeof(*vdomain), GFP_KERNEL);
@@ -638,7 +694,17 @@ static int viommu_domain_finalise(struct viommu_endpoint *vdev,
 	vdomain->map_flags	= viommu->map_flags;
 	vdomain->viommu		= viommu;
 
-	return 0;
+	if (domain->type != IOMMU_DOMAIN_IDENTITY)
+		return 0;
+
+	/* No VIRTIO_IOMMU_F_BYPASS, do it manually */
+	ret = viommu_domain_map_identity(vdev, vdomain);
+	if (ret) {
+		ida_free(&viommu->domain_ids, vdomain->id);
+		vdomain->viommu = NULL;
+	}
+
+	return ret;
 }
 
 static void viommu_domain_free(struct iommu_domain *domain)
@@ -689,6 +755,10 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 	struct viommu_endpoint *vdev = dev_iommu_priv_get(dev);
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
+
+	if (domain->type == IOMMU_DOMAIN_IDENTITY &&
+	    virtio_has_feature(vdev->viommu->vdev, VIRTIO_IOMMU_F_BYPASS))
+		return 0;
 
 	mutex_lock(&vdomain->mutex);
 	if (!vdomain->viommu) {
@@ -1167,6 +1237,7 @@ static unsigned int features[] = {
 	VIRTIO_IOMMU_F_DOMAIN_RANGE,
 	VIRTIO_IOMMU_F_PROBE,
 	VIRTIO_IOMMU_F_MMIO,
+	VIRTIO_IOMMU_F_BYPASS,
 };
 
 static struct virtio_device_id id_table[] = {
