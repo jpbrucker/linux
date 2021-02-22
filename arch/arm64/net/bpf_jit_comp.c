@@ -1423,7 +1423,9 @@ static int invoke_one_bpf(const struct btf_func_model *m, struct jit_ctx *ctx,
 			  u8 prog_exit_reg)
 {
 	int ret;
+	u32 insn;
 	off_t offset;
+	int skip_call_insn;
 	const u8 x0 = A64_R(0);
 	const u8 x1 = A64_R(1);
 
@@ -1453,6 +1455,14 @@ static int invoke_one_bpf(const struct btf_func_model *m, struct jit_ctx *ctx,
 	emit(A64_MOV(1, tstamp_reg, x0), ctx);
 
 	/*
+	 * If __bpf_prog_enter* returns zero, skip execution of the function
+	 * (the nop is replaced by a branch below)
+	 */
+	emit(A64_CMP(1, x0, A64_ZR), ctx);
+	skip_call_insn = ctx->idx;
+	emit(aarch64_insn_gen_nop(), ctx);
+
+	/*
 	 * The BPF program takes a context pointer in x0. The context
 	 * contains all fun() arguments, and for fmod_ret programs, the
 	 * return value of the previous BPF program. If the program is
@@ -1478,6 +1488,15 @@ static int invoke_one_bpf(const struct btf_func_model *m, struct jit_ctx *ctx,
 	 */
 	if (ret_branch || !flags)
 		emit(A64_MOV(1, retval_reg, x0), ctx);
+
+	/* Land here when skipping the function call. Patch the NOP above. */
+	if (ctx->image) {
+		BUG_ON(le32_to_cpu(ctx->image[skip_call_insn]) !=
+		       aarch64_insn_gen_nop());
+		offset = AARCH64_INSN_SIZE * (ctx->idx - skip_call_insn);
+		insn = A64_B_(A64_COND_EQ, offset >> 2);
+		ctx->image[skip_call_insn] = cpu_to_le32(insn);
+	}
 
 	/* Call __bpf_prog_exit(bpf_prog, tstamp) */
 	emit_a64_mov_i64(x0, (long)prog, ctx);
