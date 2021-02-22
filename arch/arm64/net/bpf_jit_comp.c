@@ -1427,7 +1427,8 @@ static int invoke_one_bpf(const struct btf_func_model *m, struct jit_ctx *ctx,
 	const u8 x0 = A64_R(0);
 	const u8 x1 = A64_R(1);
 
-	/* Call __bpf_prog_enter(void) */
+	/* Call __bpf_prog_enter(prog) */
+	emit_a64_mov_i64(x0, (long)prog, ctx);
 	emit(A64_BLR(prog_enter_reg), ctx);
 	/* Save the timestamp returned by __bpf_prog_enter */
 	emit(A64_MOV(1, tstamp_reg, x0), ctx);
