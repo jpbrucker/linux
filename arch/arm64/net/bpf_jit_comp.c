@@ -1427,6 +1427,25 @@ static int invoke_one_bpf(const struct btf_func_model *m, struct jit_ctx *ctx,
 	const u8 x0 = A64_R(0);
 	const u8 x1 = A64_R(1);
 
+	u64 (*enter_fun)(struct bpf_prog *prog);
+	void (*exit_fun)(struct bpf_prog *prog, u64 start);
+
+	/*
+	 * Calls to BPF programs are wrapped between calls to __bpf_prog_enter
+	 * and __bpf_prog_exit. Unfortunately the kernel text is at least 128MB
+	 * away from pc, so we can't use a direct jump.
+	 */
+	if (prog->aux->sleepable) {
+		enter_fun = __bpf_prog_enter_sleepable;
+		exit_fun = __bpf_prog_exit_sleepable;
+	} else {
+		enter_fun = __bpf_prog_enter;
+		exit_fun = __bpf_prog_exit;
+	}
+
+	emit_a64_mov_i64(prog_enter_reg, (u64)enter_fun, ctx);
+	emit_a64_mov_i64(prog_exit_reg, (u64)exit_fun, ctx);
+
 	/* Call __bpf_prog_enter(prog) */
 	emit_a64_mov_i64(x0, (long)prog, ctx);
 	emit(A64_BLR(prog_enter_reg), ctx);
@@ -1625,14 +1644,6 @@ static int gen_trampoline(struct jit_ctx *ctx, const struct btf_func_model *m,
 	ctx->stack_size += nr_stack_regs * 8;
 	if (WARN_ON_ONCE(!IS_ALIGNED(ctx->stack_size, 16)))
 		return -EFAULT;
-
-	/*
-	 * Calls to BPF programs are wrapped between calls to __bpf_prog_enter
-	 * and __bpf_prog_exit. Unfortunately the kernel text is at least 128MB
-	 * away from pc, so we can't use a direct jump.
-	 */
-	emit_a64_mov_i64(prog_enter_reg, (u64)&__bpf_prog_enter, ctx);
-	emit_a64_mov_i64(prog_exit_reg, (u64)&__bpf_prog_exit, ctx);
 
 	/* (1) Call all the fentry programs */
 	ret = invoke_bpf(m, ctx, fentry, NULL, flags, tstamp_reg,
