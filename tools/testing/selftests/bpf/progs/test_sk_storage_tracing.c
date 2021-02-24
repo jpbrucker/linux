@@ -29,13 +29,19 @@ struct {
 
 char task_comm[16] = "";
 
+/*
+ * The BPF_TCP_* values are only defined in vmlinux.h when the BUILD_BUG_ON() in
+ * net/ipv4/tcp.c is used. For a clang-built kernel, they are undefined.
+ */
+#define __BPF_TCP_CLOSE 7
+
 SEC("tp_btf/inet_sock_set_state")
 int BPF_PROG(trace_inet_sock_set_state, struct sock *sk, int oldstate,
 	     int newstate)
 {
 	struct sk_stg *stg;
 
-	if (newstate == BPF_TCP_CLOSE)
+	if (newstate == __BPF_TCP_CLOSE)
 		return 0;
 
 	stg = bpf_sk_storage_get(&sk_stg_map, sk, 0,
