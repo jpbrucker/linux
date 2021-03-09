@@ -581,6 +581,7 @@ u64 notrace __bpf_prog_enter(struct bpf_prog *prog)
 {
 	rcu_read_lock();
 	migrate_disable();
+	pagefault_disable();
 	if (unlikely(__this_cpu_inc_return(*(prog->active)) != 1)) {
 		inc_misses_counter(prog);
 		return 0;
@@ -615,6 +616,7 @@ void notrace __bpf_prog_exit(struct bpf_prog *prog, u64 start)
 {
 	update_prog_stats(prog, start);
 	__this_cpu_dec(*(prog->active));
+	pagefault_enable();
 	migrate_enable();
 	rcu_read_unlock();
 }

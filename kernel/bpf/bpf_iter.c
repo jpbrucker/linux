@@ -686,7 +686,9 @@ int bpf_iter_run_prog(struct bpf_prog *prog, void *ctx)
 
 	rcu_read_lock();
 	migrate_disable();
+	pagefault_disable();
 	ret = bpf_prog_run(prog, ctx);
+	pagefault_enable();
 	migrate_enable();
 	rcu_read_unlock();
 

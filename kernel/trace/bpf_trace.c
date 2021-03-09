@@ -1985,7 +1985,9 @@ void __bpf_trace_run(struct bpf_prog *prog, u64 *args)
 {
 	cant_sleep();
 	rcu_read_lock();
+	pagefault_disable();
 	(void) bpf_prog_run(prog, args);
+	pagefault_enable();
 	rcu_read_unlock();
 }
 
