@@ -41,7 +41,7 @@ $(SUBCMDOBJ): fixdep FORCE | $(OUTPUT)/libsubcmd
 	$(Q)$(MAKE) -C $(SUBCMD_SRC) OUTPUT=$(abspath $(dir $@))/ $(abspath $@)
 
 $(BPFOBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPUT)/libbpf
-	$(Q)$(MAKE) $(submake_extras) -C $(LIBBPF_SRC)  OUTPUT=$(abspath $(dir $@))/ $(abspath $@)
+	$(Q)$(MAKE) $(submake_extras) -C $(LIBBPF_SRC) CROSS_COMPILE= OUTPUT=$(abspath $(dir $@))/ $(abspath $@)
 
 CFLAGS := -g \
           -I$(srctree)/tools/include \
