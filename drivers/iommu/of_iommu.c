@@ -87,6 +87,21 @@ int of_get_dma_window(struct device_node *dn, const char *prefix, int index,
 }
 EXPORT_SYMBOL_GPL(of_get_dma_window);
 
+static int of_iommu_check_deferred_probe(struct device *dev,
+					 struct device_node *iommu_node)
+{
+	/*
+	 * For IOMMUs that can be built as module, keep deferring probe until
+	 * userspace loads it.
+	 */
+	if ((of_device_is_compatible(iommu_node, "virtio,pci-iommu") ||
+	     of_device_is_compatible(iommu_node, "virtio,mmio")) &&
+	    IS_ENABLED(CONFIG_VIRTIO_IOMMU))
+		return -EPROBE_DEFER;
+
+	return driver_deferred_probe_check_state(dev);
+}
+
 static int of_iommu_xlate(struct device *dev,
 			  struct of_phandle_args *iommu_spec)
 {
@@ -108,7 +123,7 @@ static int of_iommu_xlate(struct device *dev,
 	 * a proper probe-ordering dependency mechanism in future.
 	 */
 	if (!ops)
-		return driver_deferred_probe_check_state(dev);
+		return of_iommu_check_deferred_probe(dev, iommu_spec->np);
 
 	if (!try_module_get(ops->owner))
 		return -ENODEV;
