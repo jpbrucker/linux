@@ -19,6 +19,27 @@
 
 #define NO_IOMMU	1
 
+static const char * const virtio_iommu_compat[] = {
+	"virtio,pci-iommu",
+	"pci1af4,1057",
+	"virtio,mmio",
+	NULL,
+};
+
+static int of_iommu_check_deferred_probe(struct device *dev,
+					 struct device_node *iommu_node)
+{
+	/*
+	 * For IOMMUs that can be built as module, keep deferring probe until
+	 * userspace loads it.
+	 */
+	if (of_device_compatible_match(iommu_node, virtio_iommu_compat) &&
+	    IS_ENABLED(CONFIG_VIRTIO_IOMMU))
+		return -EPROBE_DEFER;
+
+	return driver_deferred_probe_check_state(dev);
+}
+
 static int of_iommu_xlate(struct device *dev,
 			  struct of_phandle_args *iommu_spec)
 {
@@ -40,7 +61,7 @@ static int of_iommu_xlate(struct device *dev,
 	 * a proper probe-ordering dependency mechanism in future.
 	 */
 	if (!ops)
-		return driver_deferred_probe_check_state(dev);
+		return of_iommu_check_deferred_probe(dev, iommu_spec->np);
 
 	if (!try_module_get(ops->owner))
 		return -ENODEV;
