@@ -52,6 +52,7 @@ struct viommu_dev {
 	/* Supported MAP flags */
 	u32				map_flags;
 	u32				probe_size;
+	u8				bypass;
 };
 
 struct viommu_mapping {
@@ -697,7 +698,7 @@ static int viommu_domain_finalise(struct viommu_endpoint *vdev,
 	if (domain->type != IOMMU_DOMAIN_IDENTITY)
 		return 0;
 
-	/* No VIRTIO_IOMMU_F_BYPASS, do it manually */
+	/* No VIRTIO_IOMMU_F_BYPASS_CONFIG, do it manually */
 	ret = viommu_domain_map_identity(vdev, vdomain);
 	if (ret) {
 		ida_free(&viommu->domain_ids, vdomain->id);
@@ -747,6 +748,30 @@ static bool viommu_domain_compatible(struct viommu_domain *vdomain,
 	return true;
 }
 
+static int viommu_detach_dev(struct iommu_fwspec *fwspec, struct viommu_endpoint *vdev)
+{
+	int i, ret;
+	struct virtio_iommu_req_detach req;
+	struct viommu_domain *vdomain = vdev->vdomain;
+
+	if (!vdomain)
+		return 0;
+
+	req = (struct virtio_iommu_req_detach) {
+		.head.type	= VIRTIO_IOMMU_T_DETACH,
+		.domain		= cpu_to_le32(vdomain->id),
+	};
+
+	for (i = 0; i < fwspec->num_ids; i++) {
+		req.endpoint = cpu_to_le32(fwspec->ids[i]);
+
+		ret = viommu_send_req_sync(vdomain->viommu, &req, sizeof(req));
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
 static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 {
 	int i;
@@ -756,9 +781,10 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 	struct viommu_endpoint *vdev = dev_iommu_priv_get(dev);
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
 
-	if (domain->type == IOMMU_DOMAIN_IDENTITY &&
-	    virtio_has_feature(vdev->viommu->vdev, VIRTIO_IOMMU_F_BYPASS))
+	if (domain->type == IOMMU_DOMAIN_IDENTITY && vdev->viommu->bypass) {
+		viommu_detach_dev(fwspec, vdev);
 		return 0;
+	}
 
 	mutex_lock(&vdomain->mutex);
 	if (!vdomain->viommu) {
@@ -1159,6 +1185,12 @@ static int viommu_probe(struct virtio_device *vdev)
 	if (virtio_has_feature(vdev, VIRTIO_IOMMU_F_MMIO))
 		viommu->map_flags |= VIRTIO_IOMMU_MAP_F_MMIO;
 
+	if (virtio_has_feature(vdev, VIRTIO_IOMMU_F_BYPASS_CONFIG)) {
+		viommu->bypass = iommu_default_passthrough();
+		virtio_cwrite(vdev, struct virtio_iommu_config, bypass,
+			      &viommu->bypass);
+	}
+
 	viommu_ops.pgsize_bitmap = viommu->pgsize_bitmap;
 
 	virtio_device_ready(vdev);
@@ -1237,7 +1269,7 @@ static unsigned int features[] = {
 	VIRTIO_IOMMU_F_DOMAIN_RANGE,
 	VIRTIO_IOMMU_F_PROBE,
 	VIRTIO_IOMMU_F_MMIO,
-	VIRTIO_IOMMU_F_BYPASS,
+	VIRTIO_IOMMU_F_BYPASS_CONFIG,
 };
 
 static struct virtio_device_id id_table[] = {
