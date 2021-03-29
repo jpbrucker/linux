@@ -1068,4 +1068,16 @@ static int __init register_node_type(void)
 	 */
 	return ret;
 }
-postcore_initcall(register_node_type);
+
+void __init mem_node_init(void)
+{
+	int i;
+
+	register_node_type();
+
+	if (!IS_ENABLED(CONFIG_GENERIC_MEM_NODE))
+		return;
+
+	for_each_online_node(i)
+		register_one_node(i);
+}

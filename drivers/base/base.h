@@ -117,6 +117,11 @@ extern int hypervisor_init(void);
 static inline int hypervisor_init(void) { return 0; }
 #endif
 extern int platform_bus_init(void);
+#ifdef CONFIG_NUMA
+extern void mem_node_init(void);
+#else
+static inline void mem_node_init(void) { }
+#endif
 extern void cpu_dev_init(void);
 extern void container_dev_init(void);
 #ifdef CONFIG_AUXILIARY_BUS
