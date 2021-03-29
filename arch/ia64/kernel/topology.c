@@ -27,8 +27,6 @@
 #include <asm/numa.h>
 #include <asm/cpu.h>
 
-static struct ia64_cpu *sysfs_cpus;
-
 void arch_fix_phys_package_id(int num, u32 slot)
 {
 #ifdef CONFIG_SMP
@@ -42,59 +40,26 @@ EXPORT_SYMBOL_GPL(arch_fix_phys_package_id);
 #ifdef CONFIG_HOTPLUG_CPU
 int __ref arch_register_cpu(int num)
 {
+	struct cpu *cpu = &per_cpu(cpu_devices, num);
+
 	/*
 	 * If CPEI can be re-targeted or if this is not
 	 * CPEI target, then it is hotpluggable
 	 */
 	if (can_cpei_retarget() || !is_cpu_cpei_target(num))
-		sysfs_cpus[num].cpu.hotpluggable = 1;
+		cpu->hotpluggable = 1;
 	map_cpu_to_node(num, node_cpuid[num].nid);
-	return register_cpu(&sysfs_cpus[num].cpu, num);
+	return register_cpu(cpu, num);
 }
 EXPORT_SYMBOL(arch_register_cpu);
 
 void __ref arch_unregister_cpu(int num)
 {
-	unregister_cpu(&sysfs_cpus[num].cpu);
+	unregister_cpu(&per_cpu(cpu_devices, num));
 	unmap_cpu_from_node(num, cpu_to_node(num));
 }
 EXPORT_SYMBOL(arch_unregister_cpu);
-#else
-static int __init arch_register_cpu(int num)
-{
-	return register_cpu(&sysfs_cpus[num].cpu, num);
-}
 #endif /*CONFIG_HOTPLUG_CPU*/
-
-
-static int __init topology_init(void)
-{
-	int i, err = 0;
-
-#ifdef CONFIG_NUMA
-	/*
-	 * MCD - Do we want to register all ONLINE nodes, or all POSSIBLE nodes?
-	 */
-	for_each_online_node(i) {
-		if ((err = register_one_node(i)))
-			goto out;
-	}
-#endif
-
-	sysfs_cpus = kcalloc(NR_CPUS, sizeof(struct ia64_cpu), GFP_KERNEL);
-	if (!sysfs_cpus)
-		panic("kzalloc in topology_init failed - NR_CPUS too big?");
-
-	for_each_present_cpu(i) {
-		if((err = arch_register_cpu(i)))
-			goto out;
-	}
-out:
-	return err;
-}
-
-subsys_initcall(topology_init);
-
 
 /*
  * Export cpu cache information through sysfs
