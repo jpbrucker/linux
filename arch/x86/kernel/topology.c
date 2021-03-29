@@ -35,8 +35,6 @@
 #include <asm/io_apic.h>
 #include <asm/cpu.h>
 
-static DEFINE_PER_CPU(struct x86_cpu, cpu_devices);
-
 #ifdef CONFIG_HOTPLUG_CPU
 
 #ifdef CONFIG_BOOTPARAM_HOTPLUG_CPU0
@@ -131,15 +129,15 @@ int arch_register_cpu(int num)
 		}
 	}
 	if (num || cpu0_hotpluggable)
-		per_cpu(cpu_devices, num).cpu.hotpluggable = 1;
+		per_cpu(cpu_devices, num).hotpluggable = 1;
 
-	return register_cpu(&per_cpu(cpu_devices, num).cpu, num);
+	return register_cpu(&per_cpu(cpu_devices, num), num);
 }
 EXPORT_SYMBOL(arch_register_cpu);
 
 void arch_unregister_cpu(int num)
 {
-	unregister_cpu(&per_cpu(cpu_devices, num).cpu);
+	unregister_cpu(&per_cpu(cpu_devices, num));
 }
 EXPORT_SYMBOL(arch_unregister_cpu);
 #else /* CONFIG_HOTPLUG_CPU */
@@ -149,19 +147,3 @@ static int __init arch_register_cpu(int num)
 	return register_cpu(&per_cpu(cpu_devices, num).cpu, num);
 }
 #endif /* CONFIG_HOTPLUG_CPU */
-
-static int __init topology_init(void)
-{
-	int i;
-
-#ifdef CONFIG_NUMA
-	for_each_online_node(i)
-		register_one_node(i);
-#endif
-
-	for_each_present_cpu(i)
-		arch_register_cpu(i);
-
-	return 0;
-}
-subsys_initcall(topology_init);
