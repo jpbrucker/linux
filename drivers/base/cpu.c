@@ -507,6 +507,9 @@ static void __init cpu_dev_register_generic(void)
 	if (!IS_ENABLED(CONFIG_GENERIC_CPU_DEVICES))
 		return;
 
+	if (!acpi_disabled)
+		return;
+
 	for_each_present_cpu(i) {
 		if (arch_register_cpu(i))
 			panic("Failed to register CPU device");
