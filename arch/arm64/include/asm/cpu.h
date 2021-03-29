@@ -13,7 +13,6 @@
  * Records attributes of an individual CPU.
  */
 struct cpuinfo_arm64 {
-	struct cpu	cpu;
 	struct kobject	kobj;
 	u32		reg_ctr;
 	u32		reg_cntfrq;
