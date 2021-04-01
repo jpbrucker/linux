@@ -292,6 +292,13 @@ config ACPI_PROCESSOR
 	  To compile this driver as a module, choose M here:
 	  the module will be called processor.
 
+config ACPI_HOTPLUG_CPU_UI_HIDING
+	bool "Allow _STA to hide CPUs from sysfs"
+	help
+	  The ACPI _STA method can indicate CPUs should not be shown in the
+	  'UI'. When enabled, this option hides these CPUs from sysfs. CPUs
+	  that are already online will be shown regardless.
+
 config ACPI_IPMI
 	tristate "IPMI"
 	depends on IPMI_HANDLER

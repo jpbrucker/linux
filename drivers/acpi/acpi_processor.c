@@ -209,6 +209,24 @@ static inline int acpi_processor_hotadd_init(struct acpi_processor *pr)
 }
 #endif /* CONFIG_ACPI_HOTPLUG_CPU */
 
+static int acpi_processor_ui_hidden(struct acpi_processor *pr)
+{
+	unsigned long long sta;
+	acpi_status status;
+
+	if (!IS_ENABLED(CONFIG_ACPI_HOTPLUG_CPU_UI_HIDING))
+		return false;
+
+	if (cpu_online(pr->id))
+		return false;
+
+	status = acpi_evaluate_integer(pr->handle, "_STA", NULL, &sta);
+	if (ACPI_FAILURE(status))
+		return false;
+
+	return !(sta & ACPI_STA_DEVICE_UI);
+}
+
 static int acpi_processor_get_info(struct acpi_device *device)
 {
 	union acpi_object object = { 0 };
@@ -286,9 +304,11 @@ static int acpi_processor_get_info(struct acpi_device *device)
 	}
 
 	if (!invalid_logical_cpuid(pr->id) && cpu_present(pr->id)) {
-		int ret = arch_register_cpu(pr->id);
-		if (ret)
-			return ret;
+		if (!acpi_processor_ui_hidden(pr)) {
+			int ret = arch_register_cpu(pr->id);
+			if (ret)
+				return ret;
+		}
 	}
 
 	/*
