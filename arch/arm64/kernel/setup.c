@@ -412,6 +412,13 @@ int arch_register_cpu(int num)
 	return register_cpu(cpu, num);
 }
 
+void arch_unregister_cpu(int num)
+{
+	struct cpu *cpu = &per_cpu(cpu_devices, num);
+
+	unregister_cpu(cpu);
+}
+
 static void dump_kernel_offset(void)
 {
 	const unsigned long offset = kaslr_offset();
