@@ -285,6 +285,8 @@ static int acpi_scan_hot_remove(struct acpi_device *device)
 	if (ACPI_FAILURE(status)) {
 		acpi_handle_warn(handle,
 			"Status check after eject failed (0x%x)\n", status);
+	} else if (!(sta & ACPI_STA_DEVICE_UI)) {
+		return 0;
 	} else if (sta & ACPI_STA_DEVICE_ENABLED) {
 		acpi_handle_warn(handle,
 			"Eject incomplete - status 0x%llx\n", sta);
