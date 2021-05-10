@@ -1013,15 +1013,11 @@ prq_advance:
 	return IRQ_RETVAL(handled);
 }
 
-struct iommu_sva *intel_svm_bind(struct device *dev, struct mm_struct *mm, void *drvdata)
+intel_svm_bind(struct device *dev, struct mm_struct *mm, unsigned int flags)
 {
 	struct intel_iommu *iommu = device_to_iommu(dev, NULL, NULL);
-	unsigned int flags = 0;
 	struct iommu_sva *sva;
 	int ret;
-
-	if (drvdata)
-		flags = *(unsigned int *)drvdata;
 
 	if (flags & SVM_FLAG_SUPERVISOR_MODE) {
 		if (!ecap_srs(iommu->ecap)) {
