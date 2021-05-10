@@ -505,13 +505,12 @@ out:
 	return ret;
 }
 
-static int intel_svm_alloc_pasid(struct device *dev, struct mm_struct *mm,
-				 unsigned int flags)
+static int intel_svm_alloc_pasid(struct device *dev, unsigned int flags)
 {
 	ioasid_t max_pasid = dev_is_pci(dev) ?
 			pci_max_pasids(to_pci_dev(dev)) : intel_pasid_max_id;
 
-	return iommu_sva_alloc_pasid(mm, PASID_MIN, max_pasid - 1);
+	return iommu_sva_alloc_pasid(PASID_MIN, max_pasid - 1);
 }
 
 static void intel_svm_free_pasid(struct mm_struct *mm)
@@ -1013,10 +1012,11 @@ prq_advance:
 	return IRQ_RETVAL(handled);
 }
 
-intel_svm_bind(struct device *dev, struct mm_struct *mm, unsigned int flags)
+struct iommu_sva *intel_svm_bind(struct device *dev, unsigned int flags)
 {
 	struct intel_iommu *iommu = device_to_iommu(dev, NULL, NULL);
 	struct iommu_sva *sva;
+	struct mm_struct *mm;
 	int ret;
 
 	if (flags & SVM_FLAG_SUPERVISOR_MODE) {
@@ -1033,10 +1033,12 @@ intel_svm_bind(struct device *dev, struct mm_struct *mm, unsigned int flags)
 		}
 
 		mm = &init_mm;
+	} else {
+		mm = current->mm;
 	}
 
 	mutex_lock(&pasid_mutex);
-	ret = intel_svm_alloc_pasid(dev, mm, flags);
+	ret = intel_svm_alloc_pasid(dev, flags);
 	if (ret) {
 		mutex_unlock(&pasid_mutex);
 		return ERR_PTR(ret);
