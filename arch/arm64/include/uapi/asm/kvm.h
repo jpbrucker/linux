@@ -413,6 +413,18 @@ struct kvm_arm_copy_mte_tags {
 #define KVM_PSCI_RET_INVAL		PSCI_RET_INVALID_PARAMS
 #define KVM_PSCI_RET_DENIED		PSCI_RET_DENIED
 
+/*
+ * KVM_CAP_EXIT_HYPERCALL parameter that lets userspace handle PSCI calls and
+ * disables PSCI support in KVM.
+ */
+#define KVM_ARM_HC_RANGE_PSCI		(1 << 0)
+
+/*
+ * In kvm_run.hypercall.nr, this bit indicates that the call is a SMC. When
+ * the bit is not set, the call is an HVC.
+ */
+#define KVM_ARM_EXIT_HYPERCALL_SMC	(1ULL << 63)
+
 #endif
 
 #endif /* __ARM_KVM_H__ */

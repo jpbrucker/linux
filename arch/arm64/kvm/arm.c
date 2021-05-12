@@ -99,6 +99,12 @@ int kvm_vm_ioctl_enable_cap(struct kvm *kvm,
 		r = 0;
 		kvm->arch.mte_enabled = true;
 		break;
+	case KVM_CAP_EXIT_HYPERCALL:
+		if (cap->args[0] != KVM_ARM_HC_RANGE_PSCI)
+			return -EINVAL;
+		r = 0;
+		kvm->arch.psci_to_user = true;
+		break;
 	default:
 		r = -EINVAL;
 		break;
@@ -274,6 +280,9 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 	case KVM_CAP_ARM_PTRAUTH_ADDRESS:
 	case KVM_CAP_ARM_PTRAUTH_GENERIC:
 		r = system_has_full_ptr_auth();
+		break;
+	case KVM_CAP_EXIT_HYPERCALL:
+		r = KVM_ARM_HC_RANGE_PSCI;
 		break;
 	default:
 		r = 0;

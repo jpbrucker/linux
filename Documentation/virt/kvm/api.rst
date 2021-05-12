@@ -5488,8 +5488,16 @@ to the byte array.
 			__u32 pad;
 		} hypercall;
 
-Unused.  This was once used for 'hypercall to userspace'.  To implement
-such functionality, use KVM_EXIT_IO (x86) or KVM_EXIT_MMIO (all except s390).
+  #define KVM_EXIT_HYPERCALL_ARM_SMC (1 << 63)
+
+On x86 and arm64 is is used for 'hypercall to userspace' when the
+KVM_CAP_EXIT_HYPERCALL capability is enabled.
+
+On arm64, 'nr' contains the HVC or SMC immediate. When the call is SMC, 'nr'
+has the KVM_ARM_EXIT_HYPERCALL_SMC flag set. The other parameters are unused.
+
+KVM_EXIT_IO (x86) or KVM_EXIT_MMIO (all except s390 and arm64) may also be used
+to implement such functionality.
 
 .. note:: KVM_EXIT_IO is significantly faster than KVM_EXIT_MMIO.
 
@@ -7231,7 +7239,7 @@ leaf.
 ---------------------------
 
 :Capability: KVM_CAP_EXIT_HYPERCALL
-:Architectures: x86
+:Architectures: x86, arm64
 :Type: vm
 
 This capability, if enabled, will cause KVM to exit to userspace
@@ -7239,9 +7247,16 @@ with KVM_EXIT_HYPERCALL exit reason to process some hypercalls.
 
 Calling KVM_CHECK_EXTENSION for this capability will return a bitmask
 of hypercalls that can be configured to exit to userspace.
-Right now, the only such hypercall is KVM_HC_MAP_GPA_RANGE.
+On x86, the only such hypercall is KVM_HC_MAP_GPA_RANGE.
 
 The argument to KVM_ENABLE_CAP is also a bitmask, and must be a subset
 of the result of KVM_CHECK_EXTENSION.  KVM will forward to userspace
 the hypercalls whose corresponding bit is in the argument, and return
 ENOSYS for the others.
+
+On arm64, the only valid bit is KVM_ARM_HC_RANGE_PSCI, which indicates that
+userspace can handle all PSCI calls instead of KVM. Userspace should support at
+least PSCI v1.0. Otherwise SMCCC features won't be available to the guest.
+Userspace does not need to handle the SMCCC_VERSION parameter for the
+PSCI_FEATURES function. The KVM_ARM_VCPU_PSCI_0_2 vCPU feature should be set
+even if this capability is enabled.
