@@ -350,8 +350,8 @@ struct kvm_vcpu_arch {
 		u32	mdscr_el1;
 	} guest_debug_preserved;
 
-	/* vcpu power-off state */
-	bool power_off;
+	/* vcpu power state: KVM_MP_STATE_{RUNNABLE,STOPPED,HALTED} */
+	u32 mp_state;
 
 	/* Don't run the guest (internal implementation need) */
 	bool pause;
