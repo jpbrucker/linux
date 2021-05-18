@@ -1421,8 +1421,9 @@ Possible values are:
                                  which has not yet received an INIT signal [x86]
    KVM_MP_STATE_INIT_RECEIVED    the vcpu has received an INIT signal, and is
                                  now ready for a SIPI [x86]
-   KVM_MP_STATE_HALTED           the vcpu has executed a HLT instruction and
-                                 is waiting for an interrupt [x86]
+   KVM_MP_STATE_HALTED           the vcpu has executed a HLT (x86) or WFI
+                                 (arm64) instruction and is waiting for an
+                                 interrupt [x86,arm64]
    KVM_MP_STATE_SIPI_RECEIVED    the vcpu has just received a SIPI (vector
                                  accessible via KVM_GET_VCPU_EVENTS) [x86]
    KVM_MP_STATE_STOPPED          the vcpu is stopped [s390,arm/arm64]
@@ -1440,8 +1441,9 @@ these architectures.
 For arm/arm64:
 ^^^^^^^^^^^^^^
 
-The only states that are valid are KVM_MP_STATE_STOPPED and
-KVM_MP_STATE_RUNNABLE which reflect if the vcpu is paused or not.
+Valid states are KVM_MP_STATE_STOPPED and KVM_MP_STATE_RUNNABLE which reflect
+if the vcpu is paused or not. If KVM_CAP_ARM_MP_HALTED is present, state
+KVM_MP_STATE_HALTED is also valid.
 
 4.39 KVM_SET_MP_STATE
 ---------------------
@@ -1462,8 +1464,10 @@ these architectures.
 For arm/arm64:
 ^^^^^^^^^^^^^^
 
-The only states that are valid are KVM_MP_STATE_STOPPED and
-KVM_MP_STATE_RUNNABLE which reflect if the vcpu should be paused or not.
+Valid states are KVM_MP_STATE_STOPPED and KVM_MP_STATE_RUNNABLE which reflect
+if the vcpu should be paused or not. If KVM_CAP_ARM_MP_HALTED is present,
+KVM_MP_STATE_HALTED can be set, to wait for interrupts targeted at the vcpu
+before running it.
 
 4.40 KVM_SET_IDENTITY_MAP_ADDR
 ------------------------------

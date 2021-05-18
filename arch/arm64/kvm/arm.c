@@ -213,6 +213,7 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 	case KVM_CAP_SET_GUEST_DEBUG:
 	case KVM_CAP_VCPU_ATTRIBUTES:
 	case KVM_CAP_PTP_KVM:
+	case KVM_CAP_ARM_MP_HALTED:
 		r = 1;
 		break;
 	case KVM_CAP_SET_GUEST_DEBUG2:
@@ -479,6 +480,9 @@ int kvm_arch_vcpu_ioctl_set_mpstate(struct kvm_vcpu *vcpu,
 	case KVM_MP_STATE_RUNNABLE:
 		vcpu->arch.mp_state = KVM_MP_STATE_RUNNABLE;
 		break;
+	case KVM_MP_STATE_HALTED:
+		kvm_arm_vcpu_suspend(vcpu);
+		break;
 	case KVM_MP_STATE_STOPPED:
 		kvm_arm_vcpu_power_off(vcpu);
 		break;
@@ -713,7 +717,12 @@ static void check_vcpu_requests(struct kvm_vcpu *vcpu)
 			kvm_pmu_handle_pmcr(vcpu,
 					    __vcpu_sys_reg(vcpu, PMCR_EL0));
 
-		if (kvm_check_request(KVM_REQ_SUSPEND, vcpu)) {
+		/*
+		 * Check mp_state again in case userspace changed their mind
+		 * after requesting suspend.
+		 */
+		if (kvm_check_request(KVM_REQ_SUSPEND, vcpu) &&
+		    vcpu->arch.mp_state == KVM_MP_STATE_HALTED) {
 			if (!irq_pending) {
 				kvm_vcpu_block(vcpu);
 				kvm_clear_request(KVM_REQ_UNHALT, vcpu);
