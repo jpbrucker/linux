@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -981,6 +982,53 @@ static int parse_options(int argc, char *argv[], struct program_options *opts)
 	return 0;
 }
 
+static int prepare_stack(struct program_options *opts)
+{
+	size_t needed_size;
+	float margin = 0.9;
+	struct rlimit rlim;
+	int ret;
+
+	if (!(opts->mem.unified & UNIFIED_MEM_STACK))
+		return 0;
+
+	/*
+	 * Ensure stack rlimit is large enough for the buffer. Otherwise we'll
+	 * segfault.
+	 */
+	/* FIXME: overflow? */
+	needed_size = opts->offset + opts->size;
+	if (opts->transaction_type == MEMCPY)
+		needed_size *= 2;
+
+	ret = getrlimit(RLIMIT_STACK, &rlim);
+	if (ret) {
+		perror("getrlimit");
+		return ret;
+	}
+
+	if (needed_size > rlim.rlim_max) {
+		pr_err("Requested size %zu larger than max stack size %zu\n",
+		       needed_size, rlim.rlim_max);
+		return ENOMEM;
+
+	} else if (needed_size > rlim.rlim_cur * margin) {
+		pr_debug("Updating stack rlimit %zu -> %zu\n", rlim.rlim_cur,
+			 rlim.rlim_max);
+		rlim.rlim_cur = rlim.rlim_max;
+		ret = setrlimit(RLIMIT_STACK, &rlim);
+		if (ret) {
+			perror("setrlimit");
+			return ret;
+		}
+	}
+
+	if (needed_size > rlim.rlim_max * margin)
+		pr_warn("Stack limit %zu close to requested buffer size %zu. Might segfault.\n",
+			rlim.rlim_max, needed_size);
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	size_t i;
@@ -1012,6 +1060,9 @@ int main(int argc, char *argv[])
 	ret = parse_options(argc, argv, &options);
 	if (ret)
 		return ret;
+
+	if (prepare_stack(&options))
+		return ENOMEM;
 
 	ret = smmute_backend_init(options.backend, NULL);
 	if (ret)
