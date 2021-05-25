@@ -16,7 +16,7 @@
 #include "smmute-lib.h"
 
 enum loglevel loglevel = LOG_INFO;
-const char *optstring = "cdf:hkmn:s:y";
+const char *optstring = "cdf:hkmn:s:ty";
 static void print_help(char *progname)
 {
 	pr_err(
@@ -33,6 +33,7 @@ static void print_help(char *progname)
 "  -m               merge - put all devices in the same VFIO container     \n"
 "  -n <num>         number of transactions per device                    16\n"
 "  -s <num>         transaction size in bytes                         10000\n"
+"  -t               use pthread instead of fork                            \n"
 "  -y               sync processes before launching transaction            \n",
 		progname);
 }
@@ -51,6 +52,7 @@ struct program_options {
 	bool			merge;
 	bool			check;
 	bool			sync;
+	bool			threads;
 	bool			kill;
 };
 
@@ -59,6 +61,13 @@ struct shared_data {
 	pthread_cond_t		child_cond;
 	int			nr_waiters;
 	int			nr_children;
+};
+
+struct thread_context {
+	pthread_t		pthread;
+	struct program_options	*opts;
+	struct smmute_dev	*devs;
+	int			seed;
 };
 
 static struct shared_data *shr;
@@ -180,6 +189,7 @@ int run_child(struct program_options *opts, struct smmute_dev *devs, int seed)
 		pthread_mutex_unlock(&shr->child_mutex);
 	}
 
+	/* In thread mode, this kills everything. */
 	if (opts->kill && kill(0, SIGINT))
 	    perror("kill()");
 
@@ -253,6 +263,15 @@ out_free_tsacs:
 	return ret;
 }
 
+static void *run_child_thread(void *arg)
+{
+	int ret;
+	struct thread_context *ctx = arg;
+
+	ret = run_child(ctx->opts, ctx->devs, ctx->seed);
+	return (void *)(intptr_t)ret;
+}
+
 int run(struct program_options *opts)
 {
 	int i;
@@ -263,6 +282,7 @@ int run(struct program_options *opts)
 	int devices_opened = 0;
 	struct smmute_dev *devs;
 	size_t nr_devs = opts->nr_devices;
+	struct thread_context *threads = NULL;
 
 	devs = calloc(nr_devs, sizeof(struct smmute_dev));
 	if (!devs)
@@ -304,7 +324,34 @@ int run(struct program_options *opts)
 		shr->nr_children = opts->max_children;
 	}
 
+	if (opts->threads) {
+		threads = calloc(opts->max_children, sizeof(threads[0]));
+		if (!threads)
+			return ENOMEM;
+	}
+
 	for (nr_children = 0; nr_children < opts->max_children; nr_children++) {
+		/*
+		 * Use seed 'thread+1', since seeds 0 and 1 produce the same
+		 * random sequence.
+		 */
+		int seed = nr_children + 1;
+
+		if (opts->threads) {
+			struct thread_context *ctx = &threads[nr_children];
+
+			ctx->opts = opts;
+			ctx->devs = devs;
+			ctx->seed = seed;
+			ret = pthread_create(&ctx->pthread, NULL,
+					     run_child_thread, ctx);
+			if (ret) {
+				pr_err("Can't pthread! %s\n", strerror(ret));
+				break;
+			}
+			continue;
+		}
+
 		pid_t pid = fork();
 
 		if (pid < 0) {
@@ -313,13 +360,8 @@ int run(struct program_options *opts)
 			break;
 		}
 
-		if (pid == 0) {
-			/*
-			 * Use seed 'thread+1', since seeds 0 and 1 produce the
-			 * same random sequence.
-			 */
-			return run_child(opts, devs, nr_children + 1);
-		}
+		if (pid == 0)
+			return run_child(opts, devs, seed);
 
 		pr_debug("Created child %d\n", pid);
 	}
@@ -333,6 +375,23 @@ int run(struct program_options *opts)
 	}
 
 	while (nr_children) {
+		if (opts->threads) {
+			void *retval;
+
+			ret = pthread_join(threads[--nr_children].pthread, &retval);
+			if (ret) {
+				pr_err("pthread_join failed: %s", strerror(ret));
+				continue;
+			}
+			ret = (int)(intptr_t)retval;
+			if (ret) {
+				pr_debug("Child %d exited with %d\n",
+					 nr_children, ret);
+			}
+
+			continue;
+		}
+
 		child = waitpid(-1, &wstatus, 0);
 		if (WIFEXITED(wstatus)) {
 			pr_debug("Child %d exited with %d\n",
@@ -392,6 +451,9 @@ static int parse_options(int argc, char *argv[], struct program_options *opts)
 		case 's':
 			parse_ul(optarg, &opts->buf_size);
 			break;
+		case 't':
+			opts->threads = true;
+			break;
 		case 'y':
 			opts->sync = true;
 			break;
@@ -446,7 +508,7 @@ static int detect_backends(struct program_options *opts)
 		if (initted_backend[bk])
 			continue;
 
-		ret = smmute_backend_init(bk, NULL);
+		ret = smmute_backend_init(bk, &bk_opts);
 		if (ret)
 			return ret;
 
