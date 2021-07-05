@@ -27,9 +27,15 @@
 #define MSI_IOVA_BASE			0x8000000
 #define MSI_IOVA_LENGTH			0x100000
 
-#define VIOMMU_REQUEST_VQ		0
 #define VIOMMU_EVENT_VQ			1
-#define VIOMMU_NR_VQS			2
+#define VIOMMU_VQ_NAME_LEN		16
+
+struct viommu_vq {
+	struct				virtqueue *vq;
+	spinlock_t			lock;
+	struct list_head		requests;
+	char				name[VIOMMU_VQ_NAME_LEN];
+} ____cacheline_aligned_in_smp;
 
 struct viommu_dev {
 	struct iommu_device		iommu;
@@ -38,9 +44,7 @@ struct viommu_dev {
 
 	struct ida			domain_ids;
 
-	struct virtqueue		*vqs[VIOMMU_NR_VQS];
-	spinlock_t			request_lock;
-	struct list_head		requests;
+	struct viommu_vq		*vqs;
 	void				*evts;
 
 	/* Device configuration */
@@ -51,6 +55,7 @@ struct viommu_dev {
 	/* Supported MAP flags */
 	u32				map_flags;
 	u32				probe_size;
+	u16				num_queues;
 	u8				boot_bypass;
 };
 
@@ -146,26 +151,41 @@ static off_t viommu_get_write_desc_offset(struct viommu_dev *viommu,
 	return len - tail_size;
 }
 
+static struct viommu_vq *viommu_get_req_vq(struct viommu_dev *viommu)
+{
+	/*
+	 * Try to map the CPU ID to the virtqueue number. It's just an
+	 * optimization and we can always fall back to VQ 0.
+	 * FIXME: still, do we need get_cpu()?
+	 */
+	int id = get_cpu();
+	put_cpu();
+
+	if (id >= viommu->num_queues)
+		id = 0;
+
+	return &viommu->vqs[2 * id];
+}
+
 /*
  * __viommu_sync_req - Complete all in-flight requests
  *
  * Wait for all added requests to complete. When this function returns, all
  * requests that were in-flight at the time of the call have completed.
  */
-static int __viommu_sync_req(struct viommu_dev *viommu)
+static int __viommu_sync_req(struct viommu_vq *vq)
 {
 	unsigned int len;
 	size_t write_len;
 	struct viommu_request *req;
-	struct virtqueue *vq = viommu->vqs[VIOMMU_REQUEST_VQ];
 
-	assert_spin_locked(&viommu->request_lock);
+	assert_spin_locked(&vq->lock);
 
-	virtqueue_kick(vq);
+	virtqueue_kick(vq->vq);
 
-	while (!list_empty(&viommu->requests)) {
+	while (!list_empty(&vq->requests)) {
 		len = 0;
-		req = virtqueue_get_buf(vq, &len);
+		req = virtqueue_get_buf(vq->vq, &len);
 		if (!req)
 			continue;
 
@@ -185,16 +205,16 @@ static int __viommu_sync_req(struct viommu_dev *viommu)
 	return 0;
 }
 
-static int viommu_sync_req(struct viommu_dev *viommu)
+static int viommu_sync_req(struct viommu_dev *viommu, struct viommu_vq *vq)
 {
 	int ret;
 	unsigned long flags;
 
-	spin_lock_irqsave(&viommu->request_lock, flags);
-	ret = __viommu_sync_req(viommu);
+	spin_lock_irqsave(&vq->lock, flags);
+	ret = __viommu_sync_req(vq);
 	if (ret)
 		dev_dbg(viommu->dev, "could not sync requests (%d)\n", ret);
-	spin_unlock_irqrestore(&viommu->request_lock, flags);
+	spin_unlock_irqrestore(&vq->lock, flags);
 
 	return ret;
 }
@@ -215,17 +235,16 @@ static int viommu_sync_req(struct viommu_dev *viommu)
  *
  * Return 0 if the request was successfully added to the queue.
  */
-static int __viommu_add_req(struct viommu_dev *viommu, void *buf, size_t len,
-			    bool writeback)
+static int __viommu_add_req(struct viommu_dev *viommu, struct viommu_vq *vq,
+			    void *buf, size_t len, bool writeback)
 {
 	int ret;
 	off_t write_offset;
 	struct viommu_request *req;
 	struct scatterlist top_sg, bottom_sg;
 	struct scatterlist *sg[2] = { &top_sg, &bottom_sg };
-	struct virtqueue *vq = viommu->vqs[VIOMMU_REQUEST_VQ];
 
-	assert_spin_locked(&viommu->request_lock);
+	assert_spin_locked(&vq->lock);
 
 	write_offset = viommu_get_write_desc_offset(viommu, buf, len);
 	if (write_offset <= 0)
@@ -245,16 +264,16 @@ static int __viommu_add_req(struct viommu_dev *viommu, void *buf, size_t len,
 	sg_init_one(&top_sg, req->buf, write_offset);
 	sg_init_one(&bottom_sg, req->buf + write_offset, len - write_offset);
 
-	ret = virtqueue_add_sgs(vq, sg, 1, 1, req, GFP_ATOMIC);
+	ret = virtqueue_add_sgs(vq->vq, sg, 1, 1, req, GFP_ATOMIC);
 	if (ret == -ENOSPC) {
 		/* If the queue is full, sync and retry */
-		if (!__viommu_sync_req(viommu))
-			ret = virtqueue_add_sgs(vq, sg, 1, 1, req, GFP_ATOMIC);
+		if (!__viommu_sync_req(vq))
+			ret = virtqueue_add_sgs(vq->vq, sg, 1, 1, req, GFP_ATOMIC);
 	}
 	if (ret)
 		goto err_free;
 
-	list_add_tail(&req->list, &viommu->requests);
+	list_add_tail(&req->list, &vq->requests);
 	return 0;
 
 err_free:
@@ -262,16 +281,17 @@ err_free:
 	return ret;
 }
 
-static int viommu_add_req(struct viommu_dev *viommu, void *buf, size_t len)
+static int viommu_add_req(struct viommu_dev *viommu, struct viommu_vq *vq,
+			  void *buf, size_t len)
 {
 	int ret;
 	unsigned long flags;
 
-	spin_lock_irqsave(&viommu->request_lock, flags);
-	ret = __viommu_add_req(viommu, buf, len, false);
+	spin_lock_irqsave(&vq->lock, flags);
+	ret = __viommu_add_req(viommu, vq, buf, len, false);
 	if (ret)
 		dev_dbg(viommu->dev, "could not add request: %d\n", ret);
-	spin_unlock_irqrestore(&viommu->request_lock, flags);
+	spin_unlock_irqrestore(&vq->lock, flags);
 
 	return ret;
 }
@@ -285,16 +305,17 @@ static int viommu_send_req_sync(struct viommu_dev *viommu, void *buf,
 {
 	int ret;
 	unsigned long flags;
+	struct viommu_vq *vq = viommu_get_req_vq(viommu);
 
-	spin_lock_irqsave(&viommu->request_lock, flags);
+	spin_lock_irqsave(&vq->lock, flags);
 
-	ret = __viommu_add_req(viommu, buf, len, true);
+	ret = __viommu_add_req(viommu, vq, buf, len, true);
 	if (ret) {
 		dev_dbg(viommu->dev, "could not add request (%d)\n", ret);
 		goto out_unlock;
 	}
 
-	ret = __viommu_sync_req(viommu);
+	ret = __viommu_sync_req(vq);
 	if (ret) {
 		dev_dbg(viommu->dev, "could not sync requests (%d)\n", ret);
 		/* Fall-through (get the actual request status) */
@@ -302,7 +323,7 @@ static int viommu_send_req_sync(struct viommu_dev *viommu, void *buf,
 
 	ret = viommu_get_req_errno(buf, len);
 out_unlock:
-	spin_unlock_irqrestore(&viommu->request_lock, flags);
+	spin_unlock_irqrestore(&vq->lock, flags);
 	return ret;
 }
 
@@ -874,11 +895,16 @@ static size_t viommu_unmap_pages(struct iommu_domain *domain, unsigned long iova
 {
 	int ret = 0;
 	size_t unmapped;
+	struct viommu_vq *vq;
 	struct virtio_iommu_req_unmap unmap;
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
 	size_t size = pgsize * pgcount;
 
 	BUG_ON(vdomain->bypass);
+
+	if (!gather->iommu_cookie)
+		gather->iommu_cookie = viommu_get_req_vq(vdomain->viommu);
+	vq = gather->iommu_cookie;
 
 	unmapped = viommu_del_mappings(vdomain, iova, iova + size - 1);
 	if (unmapped < size)
@@ -895,7 +921,7 @@ static size_t viommu_unmap_pages(struct iommu_domain *domain, unsigned long iova
 		.virt_end	= cpu_to_le64(iova + unmapped - 1),
 	};
 
-	ret = viommu_add_req(vdomain->viommu, &unmap, sizeof(unmap));
+	ret = viommu_add_req(vdomain->viommu, vq, &unmap, sizeof(unmap));
 	return ret ? 0 : unmapped;
 }
 
@@ -926,7 +952,14 @@ static void viommu_iotlb_sync(struct iommu_domain *domain,
 {
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
 
-	viommu_sync_req(vdomain->viommu);
+	/*
+	 * sync() without unmap() first can happen, for example when rolling
+	 * back from a failed map() that didn't create any mapping.
+	 */
+	if (!gather->iommu_cookie)
+		gather->iommu_cookie = viommu_get_req_vq(vdomain->viommu);
+
+	viommu_sync_req(vdomain->viommu, gather->iommu_cookie);
 }
 
 static void viommu_get_resv_regions(struct device *dev, struct list_head *head)
@@ -1081,15 +1114,60 @@ static struct iommu_ops viommu_ops = {
 
 static int viommu_init_vqs(struct viommu_dev *viommu)
 {
+	int ret;
+	int i, pair;
+	const char **names;
+	struct virtqueue **vqs;
+	size_t num_pairs, num_vqs;
+	vq_callback_t **callbacks;
+	struct irq_affinity irq_aff = {};
 	struct virtio_device *vdev = dev_to_virtio(viommu->dev);
-	const char *names[] = { "request", "event" };
-	vq_callback_t *callbacks[] = {
-		NULL, /* No async requests */
-		viommu_event_handler,
-	};
 
-	return virtio_find_vqs(vdev, VIOMMU_NR_VQS, viommu->vqs, callbacks,
-			       names, NULL);
+	viommu->num_queues = min_t(u16, viommu->num_queues, nr_cpu_ids);
+
+	num_pairs = viommu->num_queues;
+	num_vqs = num_pairs * 2;
+
+	if (viommu->num_queues < 1) {
+		dev_err(viommu->dev, "Invalid number of queues\n");
+		return -EINVAL;
+	}
+
+	viommu->vqs = devm_kcalloc(viommu->dev, num_vqs, sizeof(*viommu->vqs),
+				   GFP_KERNEL);
+	vqs = devm_kcalloc(viommu->dev, num_vqs, sizeof(*vqs), GFP_KERNEL);
+	callbacks = devm_kcalloc(viommu->dev, num_vqs, sizeof(*callbacks),
+				 GFP_KERNEL);
+	names = devm_kcalloc(viommu->dev, num_vqs, sizeof(*names), GFP_KERNEL);
+
+	if (!viommu->vqs || !vqs || !callbacks || !names)
+		/* Cleanup done by devm */
+		return -ENOMEM;
+
+	for (i = 0, pair = 0; pair < num_pairs; pair++, i++) {
+		snprintf(viommu->vqs[i].name, VIOMMU_VQ_NAME_LEN, "request.%d",
+			 pair);
+		/* No async request, so no callback */
+		names[i] = viommu->vqs[i].name;
+
+		i++;
+		snprintf(viommu->vqs[i].name, VIOMMU_VQ_NAME_LEN, "event.%d",
+			 pair);
+		callbacks[i] = viommu_event_handler;
+		names[i] = viommu->vqs[i].name;
+	}
+
+	ret = virtio_find_vqs(vdev, num_vqs, vqs, callbacks, names, &irq_aff);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < num_vqs; i++) {
+		/* TODO split request/event */
+		viommu->vqs[i].vq = vqs[i];
+		spin_lock_init(&viommu->vqs[i].lock);
+		INIT_LIST_HEAD(&viommu->vqs[i].requests);
+	}
+	return 0;
 }
 
 static int viommu_fill_evtq(struct viommu_dev *viommu)
@@ -1097,7 +1175,7 @@ static int viommu_fill_evtq(struct viommu_dev *viommu)
 	int i, ret;
 	struct scatterlist sg[1];
 	struct viommu_event *evts;
-	struct virtqueue *vq = viommu->vqs[VIOMMU_EVENT_VQ];
+	struct virtqueue *vq = viommu->vqs[VIOMMU_EVENT_VQ].vq;
 	size_t nr_evts = vq->num_free;
 
 	viommu->evts = evts = devm_kmalloc_array(viommu->dev, nr_evts,
@@ -1132,26 +1210,19 @@ static int viommu_probe(struct virtio_device *vdev)
 	if (!viommu)
 		return -ENOMEM;
 
-	spin_lock_init(&viommu->request_lock);
 	ida_init(&viommu->domain_ids);
 	viommu->dev = dev;
 	viommu->vdev = vdev;
-	INIT_LIST_HEAD(&viommu->requests);
-
-	ret = viommu_init_vqs(viommu);
-	if (ret)
-		return ret;
 
 	virtio_cread_le(vdev, struct virtio_iommu_config, page_size_mask,
 			&viommu->pgsize_bitmap);
 
-	if (!viommu->pgsize_bitmap) {
-		ret = -EINVAL;
-		goto err_free_vqs;
-	}
+	if (!viommu->pgsize_bitmap)
+		return -EINVAL;
 
 	viommu->map_flags = VIRTIO_IOMMU_MAP_F_READ | VIRTIO_IOMMU_MAP_F_WRITE;
 	viommu->last_domain = ~0U;
+	viommu->num_queues = 1;
 
 	/* Optional features */
 	virtio_cread_le_feature(vdev, VIRTIO_IOMMU_F_INPUT_RANGE,
@@ -1174,6 +1245,10 @@ static int viommu_probe(struct virtio_device *vdev)
 				struct virtio_iommu_config, probe_size,
 				&viommu->probe_size);
 
+	virtio_cread_le_feature(vdev, VIRTIO_IOMMU_F_MQ,
+				struct virtio_iommu_config, num_queues,
+				&viommu->num_queues);
+
 	viommu->geometry = (struct iommu_domain_geometry) {
 		.aperture_start	= input_start,
 		.aperture_end	= input_end,
@@ -1194,6 +1269,10 @@ static int viommu_probe(struct virtio_device *vdev)
 
 	viommu_ops.pgsize_bitmap = viommu->pgsize_bitmap;
 
+	ret = viommu_init_vqs(viommu);
+	if (ret)
+		return ret;
+
 	virtio_device_ready(vdev);
 
 	/* Populate the event queue with buffers */
@@ -1212,6 +1291,8 @@ static int viommu_probe(struct virtio_device *vdev)
 
 	vdev->priv = viommu;
 
+	if (viommu->num_queues > 1)
+		dev_info(dev, "%u queues", viommu->num_queues);
 	dev_info(dev, "input address: %u bits\n",
 		 order_base_2(viommu->geometry.aperture_end));
 	dev_info(dev, "page mask: %#llx\n", viommu->pgsize_bitmap);
@@ -1273,6 +1354,7 @@ static unsigned int features[] = {
 	VIRTIO_IOMMU_F_PROBE,
 	VIRTIO_IOMMU_F_MMIO,
 	VIRTIO_IOMMU_F_BYPASS_CONFIG,
+	VIRTIO_IOMMU_F_MQ,
 };
 
 static struct virtio_device_id id_table[] = {
