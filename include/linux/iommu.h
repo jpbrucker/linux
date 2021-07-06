@@ -204,6 +204,7 @@ enum iommu_dev_features {
  * @pgsize: The interval at which to perform the flush
  * @freelist: Removed pages to free after sync
  * @queued: Indicates that the flush will be queued
+ * @iommu_cookie: Data private to the IOMMU driver
  *
  * This structure is intended to be updated by multiple calls to the
  * ->unmap() function in struct iommu_ops before eventually being passed
@@ -218,6 +219,7 @@ struct iommu_iotlb_gather {
 	size_t			pgsize;
 	struct list_head	freelist;
 	bool			queued;
+	void			*iommu_cookie;
 };
 
 /**
