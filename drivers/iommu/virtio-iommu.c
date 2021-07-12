@@ -60,6 +60,7 @@ struct viommu_dev {
 	u8				boot_bypass;
 
 	bool				has_map:1;
+	bool				has_table:1;
 };
 
 struct viommu_mapping {
@@ -93,10 +94,6 @@ struct viommu_domain {
 	bool				bypass;
 };
 
-#define vdev_for_each_id(i, eid, vdev)					\
-	for (i = 0; i < vdev->dev->iommu->fwspec->num_ids &&		\
-		({ eid = vdev->dev->iommu->fwspec->ids[i]; 1; }); i++)
-
 struct viommu_endpoint {
 	struct device			*dev;
 	struct viommu_dev		*viommu;
@@ -105,8 +102,7 @@ struct viommu_endpoint {
 
 	/* properties of the physical IOMMU */
 	u64				pgsize_bitmap;
-	u64				input_start;
-	u64				input_end;
+	struct iommu_domain_geometry	geometry;
 	u8				output_bits;
 	u8				pasid_bits;
 	/* Preferred PASID table format */
@@ -357,6 +353,32 @@ out_unlock:
 }
 
 /*
+ * Send an attach/detach request for an endpoint
+ */
+static int viommu_send_endpoint_req(struct viommu_endpoint *vdev, void *buf,
+				    size_t size)
+{
+	int i, ret;
+	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(vdev->dev);
+
+	/* All attach/detach request have the same same header */
+	struct virtio_iommu_req_endpoint {
+		struct virtio_iommu_req_head	head;
+		__le32				domain;
+		__le32				endpoint;
+	} *req = buf;
+
+	for (i = 0; i < fwspec->num_ids; i++) {
+		req->endpoint = cpu_to_le32(fwspec->ids[i]);
+
+		ret = viommu_send_req_sync(vdev->viommu, req, size);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+/*
  * viommu_add_mapping - add a mapping to the internal tree
  *
  * On success, return the new mapping. Otherwise return NULL.
@@ -578,8 +600,8 @@ static int viommu_add_input_range(struct viommu_endpoint *vdev,
 {
 	if (len < sizeof(*prop))
 		return -EINVAL;
-	vdev->input_start	= le64_to_cpu(prop->start);
-	vdev->input_end		= le64_to_cpu(prop->end);
+	vdev->geometry.aperture_start	= le64_to_cpu(prop->start);
+	vdev->geometry.aperture_end	= le64_to_cpu(prop->end);
 	return 0;
 }
 
@@ -830,9 +852,6 @@ static void viommu_flush_tlb_all(void *cookie)
 {
 	struct viommu_mm *viommu_mm = cookie;
 
-	if (!viommu_mm->archid)
-		return;
-
 	__viommu_flush_pasid_tlb_all(viommu_mm->domain, viommu_mm->pasid,
 				     viommu_mm->archid,
 				     VIRTIO_IOMMU_INV_T_IOTLB);
@@ -889,8 +908,8 @@ static int viommu_domain_finalise(struct viommu_endpoint *vdev,
 
 	vdomain->id		= (unsigned int)ret;
 
-	domain->pgsize_bitmap	= viommu->pgsize_bitmap;
-	domain->geometry	= viommu->geometry;
+	domain->pgsize_bitmap	= vdev->pgsize_bitmap;
+	domain->geometry	= vdev->geometry;
 
 	vdomain->map_flags	= viommu->map_flags;
 	vdomain->viommu		= viommu;
@@ -919,6 +938,7 @@ static void viommu_domain_free(struct iommu_domain *domain)
 
 	/* Free all remaining mappings */
 	viommu_del_mappings(vdomain, 0, ULLONG_MAX);
+	free_io_pgtable_ops(vdomain->mm.ops);
 
 	if (vdomain->viommu)
 		ida_free(&vdomain->viommu->domain_ids, vdomain->id);
@@ -926,10 +946,130 @@ static void viommu_domain_free(struct iommu_domain *domain)
 	kfree(vdomain);
 }
 
+static int __viommu_detach_dev(struct viommu_endpoint *vdev)
+{
+	struct virtio_iommu_req_detach req;
+	struct viommu_domain *vdomain = vdev->vdomain;
+
+	if (!vdomain)
+		return 0;
+
+	req = (struct virtio_iommu_req_detach) {
+		.head.type	= VIRTIO_IOMMU_T_DETACH,
+		.domain		= cpu_to_le32(vdomain->id),
+	};
+
+	return viommu_send_endpoint_req(vdev, &req, sizeof(req));
+}
+
+static int viommu_detach_dev(struct viommu_endpoint *vdev)
+{
+	int ret;
+	struct viommu_domain *vdomain = vdev->vdomain;
+
+	if (!vdomain)
+		return 0;
+
+	ret = __viommu_detach_dev(vdev);
+	if (ret)
+		return ret;
+	vdomain->nr_endpoints--;
+	vdev->vdomain = NULL;
+	return 0;
+}
+
+static int viommu_attach_pgtable(struct viommu_domain *vdomain,
+				 struct viommu_endpoint *vdev,
+				 enum io_pgtable_fmt fmt,
+				 struct io_pgtable_cfg *cfg)
+{
+	int ret;
+	struct virtio_iommu_req_attach_pgt_virt req = {
+		.head.type	= VIRTIO_IOMMU_T_ATTACH_TABLE,
+		.domain		= cpu_to_le32(vdomain->id),
+	};
+
+	/* TODO: bypass flag? */
+
+	switch (fmt) {
+	case VIRT_IO_PGTABLE:
+		req.format = cpu_to_le16(VIRTIO_IOMMU_FORMAT_PGTF_VIRT);
+		req.pgd = cpu_to_le64((u64)cfg->virt.pgd);
+		break;
+	default:
+		return -EINVAL;
+	};
+
+	ret = viommu_send_endpoint_req(vdev, &req, sizeof(req));
+	if (ret)
+		__viommu_detach_dev(vdev);
+
+	return ret;
+}
+
+static int viommu_setup_pgtable(struct viommu_domain *vdomain,
+				struct viommu_endpoint *vdev)
+{
+	int ret;
+	enum io_pgtable_fmt fmt;
+	struct io_pgtable_ops *ops;
+	struct virtio_iommu_probe_table_format *desc = vdev->pgtf;
+	struct io_pgtable_cfg cfg = {
+		.iommu_dev	= vdev->viommu->dev->parent,
+		.tlb		= &viommu_flush_ops,
+		.pgsize_bitmap	= vdev->pgsize_bitmap,
+		.ias		= ilog2(vdev->geometry.aperture_end) + 1,
+		.oas		= vdev->output_bits,
+	};
+
+	if (!desc)
+		return -EINVAL;
+
+	if (!vdev->output_bits)
+		/* FIXME: OK for virt? */
+		return -ENODEV;
+
+	switch (le16_to_cpu(desc->format)) {
+	case VIRTIO_IOMMU_FORMAT_PGTF_VIRT:
+		fmt = VIRT_IO_PGTABLE;
+		break;
+	default:
+		dev_warn(vdev->dev, "unsupported page table format 0x%x\n",
+			 le16_to_cpu(desc->format));
+		return -EINVAL;
+	}
+
+	if (vdomain->mm.ops) {
+		/*
+		 * TODO: reject attach if incompatible.
+		 */
+		return -EEXIST;
+	}
+
+	/* We need this in the inval callback */
+	vdomain->mm.domain = vdomain;
+
+	ops = alloc_io_pgtable_ops(fmt, &cfg, &vdomain->mm);
+	if (!ops)
+		return -ENOMEM;
+
+	ret = viommu_attach_pgtable(vdomain, vdev, fmt, &cfg);
+	if (ret)
+		goto err_free_pgtable;
+
+	vdomain->mm.ops = ops;
+	dev_dbg(vdev->dev, "using page table format 0x%x\n", fmt);
+
+	return 0;
+err_free_pgtable:
+	free_io_pgtable_ops(vdomain->mm.ops);
+	return ret;
+}
+
 static int viommu_simple_attach(struct viommu_domain *vdomain,
 				struct viommu_endpoint *vdev)
 {
-	int i, eid, ret;
+	int ret;
 	struct virtio_iommu_req_attach req = {
 		.head.type	= VIRTIO_IOMMU_T_ATTACH,
 		.domain		= cpu_to_le32(vdomain->id),
@@ -941,13 +1081,10 @@ static int viommu_simple_attach(struct viommu_domain *vdomain,
 	if (vdomain->bypass)
 		req.flags |= cpu_to_le32(VIRTIO_IOMMU_ATTACH_F_BYPASS);
 
-	vdev_for_each_id(i, eid, vdev) {
-		req.endpoint = cpu_to_le32(eid);
-
-		ret = viommu_send_req_sync(vdomain->viommu, &req, sizeof(req));
-		if (ret)
-			goto err_detach;
-	}
+	ret = viommu_send_endpoint_req(vdev, &req, sizeof(req));
+	if (ret)
+		/* Some attach requests may have succeeded */
+		goto err_detach;
 
 	if (!vdomain->nr_endpoints) {
 		/*
@@ -962,11 +1099,7 @@ static int viommu_simple_attach(struct viommu_domain *vdomain,
 	return 0;
 
 err_detach:
-	req.head.type = VIRTIO_IOMMU_T_DETACH;
-	vdev_for_each_id(i, eid, vdev) {
-		req.endpoint = cpu_to_le32(eid);
-		viommu_send_req_sync(vdomain->viommu, &req, sizeof(req));
-	}
+	__viommu_detach_dev(vdev);
 	return ret;
 }
 
@@ -1006,6 +1139,7 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 	if (vdev->vdomain)
 		vdev->vdomain->nr_endpoints--;
 
+	viommu_setup_pgtable(vdomain, vdev);
 	if (!vdomain->mm.ops) {
 		/* If we couldn't bind any table, use the mapping tree */
 		ret = viommu_simple_attach(vdomain, vdev);
@@ -1021,29 +1155,6 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 	return ret;
 }
 
-static void viommu_detach_dev(struct viommu_endpoint *vdev)
-{
-	int i;
-	struct virtio_iommu_req_detach req;
-	struct viommu_domain *vdomain = vdev->vdomain;
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(vdev->dev);
-
-	if (!vdomain)
-		return;
-
-	req = (struct virtio_iommu_req_detach) {
-		.head.type	= VIRTIO_IOMMU_T_DETACH,
-		.domain		= cpu_to_le32(vdomain->id),
-	};
-
-	for (i = 0; i < fwspec->num_ids; i++) {
-		req.endpoint = cpu_to_le32(fwspec->ids[i]);
-		WARN_ON(viommu_send_req_sync(vdev->viommu, &req, sizeof(req)));
-	}
-	vdomain->nr_endpoints--;
-	vdev->vdomain = NULL;
-}
-
 static int viommu_map_pages(struct iommu_domain *domain, unsigned long iova,
 			    phys_addr_t paddr, size_t pgsize, size_t pgcount,
 			    int prot, gfp_t gfp, size_t *mapped)
@@ -1054,6 +1165,11 @@ static int viommu_map_pages(struct iommu_domain *domain, unsigned long iova,
 	u64 end = iova + size - 1;
 	struct virtio_iommu_req_map map;
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
+	struct io_pgtable_ops *ops = vdomain->mm.ops;
+
+	if (ops)
+		return ops->map_pages(ops, iova, paddr, pgsize, pgcount, prot,
+				      gfp, mapped);
 
 	BUG_ON(vdomain->bypass);
 
@@ -1102,13 +1218,16 @@ static size_t viommu_unmap_pages(struct iommu_domain *domain, unsigned long iova
 	struct viommu_vq *vq;
 	struct virtio_iommu_req_unmap unmap;
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
+	struct io_pgtable_ops *ops = vdomain->mm.ops;
 	size_t size = pgsize * pgcount;
 
 	BUG_ON(vdomain->bypass);
 
 	if (!gather->iommu_cookie)
 		gather->iommu_cookie = viommu_get_req_vq(vdomain->viommu);
-	vq = gather->iommu_cookie;
+
+	if (ops)
+		return ops->unmap_pages(ops, iova, pgsize, pgcount, gather);
 
 	unmapped = viommu_del_mappings(vdomain, iova, iova + size - 1);
 	if (unmapped < size)
@@ -1125,6 +1244,7 @@ static size_t viommu_unmap_pages(struct iommu_domain *domain, unsigned long iova
 		.virt_end	= cpu_to_le64(iova + unmapped - 1),
 	};
 
+	vq = gather->iommu_cookie;
 	ret = viommu_add_req(vdomain->viommu, vq, &unmap, sizeof(unmap));
 	return ret ? 0 : unmapped;
 }
@@ -1137,6 +1257,10 @@ static phys_addr_t viommu_iova_to_phys(struct iommu_domain *domain,
 	struct viommu_mapping *mapping;
 	struct interval_tree_node *node;
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
+	struct io_pgtable_ops *ops = vdomain->mm.ops;
+
+	if (ops)
+		return ops->iova_to_phys(ops, iova);
 
 	BUG_ON(vdomain->bypass);
 
@@ -1265,6 +1389,8 @@ static struct iommu_device *viommu_probe_device(struct device *dev)
 	vdev->viommu = viommu;
 	INIT_LIST_HEAD(&vdev->resv_regions);
 	dev_iommu_priv_set(dev, vdev);
+	vdev->pgsize_bitmap = viommu->pgsize_bitmap;
+	vdev->geometry = viommu->geometry;
 
 	if (viommu->probe_size) {
 		/* Get additional information for this endpoint */
@@ -1438,8 +1564,7 @@ static int viommu_probe(struct virtio_device *vdev)
 	u64 input_end = -1UL;
 	int ret;
 
-	if (!virtio_has_feature(vdev, VIRTIO_F_VERSION_1) ||
-	    !virtio_has_feature(vdev, VIRTIO_IOMMU_F_MAP_UNMAP))
+	if (!virtio_has_feature(vdev, VIRTIO_F_VERSION_1))
 		return -ENODEV;
 
 	viommu = devm_kzalloc(dev, sizeof(*viommu), GFP_KERNEL);
@@ -1486,6 +1611,9 @@ static int viommu_probe(struct virtio_device *vdev)
 				&viommu->num_queues);
 
 	viommu->has_map = virtio_has_feature(vdev, VIRTIO_IOMMU_F_MAP_UNMAP);
+	viommu->has_table = virtio_has_feature(vdev, VIRTIO_IOMMU_F_ATTACH_TABLE);
+	if (!viommu->has_table && !viommu->has_map)
+		return -EINVAL;
 
 	viommu->geometry = (struct iommu_domain_geometry) {
 		.aperture_start	= input_start,
@@ -1593,6 +1721,7 @@ static unsigned int features[] = {
 	VIRTIO_IOMMU_F_MMIO,
 	VIRTIO_IOMMU_F_BYPASS_CONFIG,
 	VIRTIO_IOMMU_F_MQ,
+	VIRTIO_IOMMU_F_ATTACH_TABLE,
 };
 
 static struct virtio_device_id id_table[] = {
