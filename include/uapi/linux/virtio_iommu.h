@@ -126,6 +126,19 @@ struct virtio_iommu_req_attach_pst_arm {
 	struct virtio_iommu_req_tail		tail;
 };
 
+/* Virt I/O page table */
+struct virtio_iommu_req_attach_pgt_virt {
+	struct virtio_iommu_req_head		head;
+	__le32					domain;
+	__le32					endpoint;
+	__le32					flags;
+	__le16					format;
+	__u8					reserved[6];
+	__le64					pgd;
+	__u8					reserved2[48];
+	struct virtio_iommu_req_tail		tail;
+};
+
 #define VIRTIO_IOMMU_MAP_F_READ			(1 << 0)
 #define VIRTIO_IOMMU_MAP_F_WRITE		(1 << 1)
 #define VIRTIO_IOMMU_MAP_F_MMIO			(1 << 2)
@@ -209,6 +222,8 @@ struct virtio_iommu_probe_pasid_size {
 #define VIRTIO_IOMMU_FOMRAT_PGTF_ARM_LPAE	1
 /* Arm smmu-v3 type PASID table format */
 #define VIRTIO_IOMMU_FORMAT_PSTF_ARM_SMMU_V3	2
+/* Virt I/O page table format */
+#define VIRTIO_IOMMU_FORMAT_PGTF_VIRT		3
 
 struct virtio_iommu_probe_table_format {
 	struct virtio_iommu_probe_property	head;
