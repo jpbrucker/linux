@@ -76,6 +76,14 @@ config IOMMU_IO_PGTABLE_DART
 
 	  If unsure, say N here.
 
+config IOMMU_IO_PGTABLE_VIRT
+	bool "Virt page table format"
+	select IOMMU_IO_PGTABLE
+	help
+	  Enable support for the virt page table format, designed for
+	  para-virtual IOMMUs.
+
+	  If unsuer, say N here.
 endmenu
 
 config IOMMU_DEBUGFS
@@ -474,6 +482,7 @@ config VIRTIO_IOMMU
 	depends on VIRTIO
 	depends on (ARM64 || X86)
 	select IOMMU_API
+	select IOMMU_IO_PGTABLE_VIRT
 	select INTERVAL_TREE
 	select ACPI_VIOT if ACPI
 	help
