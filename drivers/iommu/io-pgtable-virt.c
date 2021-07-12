@@ -1,0 +1,320 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Virt I/O Page table format.
+ * At the moment the format is loosly specified and mainly for experiments.
+ *
+ * A lot copied from io-pgtable-arm.c
+ * Copyright (C) 2014 ARM Limited
+ * Copyright (C) 2021 Linaro Limited
+ */
+
+#define pr_fmt(fmt) "virt io-pgtable: " fmt
+
+#include <linux/bitops.h>
+//#include <linux/bug.h> /* Probably can be removed */
+#include <linux/io.h>
+#include <linux/iommu.h>
+#include <linux/io-pgtable.h>
+#include <linux/kernel.h>
+#include <linux/mm.h>
+#include <linux/slab.h>
+#include <linux/types.h>
+
+#include "io-pgtable-virt.h"
+
+struct virt_iopt {
+	struct io_pgtable iopt;
+	void *pgd;
+};
+
+#define iopt_to_viopt(_iopt) container_of(_iopt, struct virt_iopt, iopt)
+#define iopt_ops_to_viopt(ops) iopt_to_viopt(container_of(ops, struct io_pgtable, ops))
+
+static void *virt_iopt_pte_to_va(viopte_t pte)
+{
+	return phys_to_virt(pte &
+			    VIRT_PGTABLE_PTE_PFN_MASK(VIRT_PGTABLE_LAST_LEVEL));
+}
+
+/* Allocate a page table and install it at @ptep */
+static viopte_t virt_iopt_install_table(struct virt_iopt *viopt, viopte_t *ptep,
+					viopte_t old_pte, gfp_t gfp)
+{
+	phys_addr_t paddr;
+	viopte_t *table;
+	viopte_t pte;
+
+	/*
+	 * I suppose we could write all DMA addresses in the table, but we do
+	 * need phys_to_virt() to free the table. We're not going to support
+	 * non-coherent IOMMUs anyway, and all the other kids do it!
+	 */
+	table = (viopte_t *)get_zeroed_page(gfp);
+	if (!table)
+		return 0;
+
+	paddr = virt_to_phys(table);
+	if (WARN_ON(paddr & ~VIRT_PGTABLE_PTE_PFN_MASK(VIRT_PGTABLE_LAST_LEVEL)))
+		goto err_free_table;
+
+	/*
+	 * Ensure the table is visible before the pte. Pairs with the address
+	 * dependency on the page walker side.
+	 *
+	 * TODO: dma_wmb() if VIRTIO_F_ORDER_PLATFORM
+	 */
+	smp_wmb();
+
+	pte = paddr | VIRT_PGTABLE_PTE_VALID | VIRT_PGTABLE_PTE_TABLE;
+	old_pte = cmpxchg64_relaxed(ptep, old_pte, pte);
+	if (old_pte) {
+		/*
+		 * We may race with another thread to install the table.
+		 * No problem.
+		 */
+		free_page((unsigned long)table);
+		return old_pte;
+	}
+
+	return pte;
+err_free_table:
+	free_page((unsigned long)table);
+	return 0;
+}
+
+/* Recursively free all pages starting from the one at @ptep */
+static void virt_iopt_free_table(struct virt_iopt *viopt, int lvl,
+				 viopte_t *ptep)
+{
+	int idx;
+	viopte_t pte;
+
+	for (idx = 0; lvl != VIRT_PGTABLE_LAST_LEVEL &&
+	     idx < VIRT_PGTABLE_NUM_PTES; idx++) {
+		pte = READ_ONCE(ptep[idx]);
+
+		if (!(pte & VIRT_PGTABLE_PTE_TABLE))
+			continue;
+
+		/*
+		 * We sent an invalidation after clearing the parent table
+		 * pointer, so it's now safe to free everything without
+		 * synchronization.
+		 */
+		virt_iopt_free_table(viopt, lvl + 1, virt_iopt_pte_to_va(pte));
+	}
+
+	free_page((unsigned long)ptep);
+}
+
+static int virt_iopt_install_pte(struct virt_iopt *viopt, unsigned long iova,
+				 phys_addr_t paddr, size_t size, int prot,
+				 int lvl, viopte_t *ptep, viopte_t old_pte)
+{
+	viopte_t pte, old;
+
+	if (WARN_ON(paddr & ~VIRT_PGTABLE_PTE_PFN_MASK(lvl)))
+		return -EINVAL;
+
+	pte = paddr | VIRT_PGTABLE_PTE_VALID;
+	if (prot & IOMMU_READ)
+		pte |= VIRT_PGTABLE_PTE_READ;
+	if (prot & IOMMU_WRITE)
+		pte |= VIRT_PGTABLE_PTE_WRITE;
+
+	old = cmpxchg64_relaxed(ptep, old_pte, pte);
+	if (WARN_ON(old != old_pte))
+		return -EADDRINUSE;
+
+	/*
+	 * If we're replacing a table with a block, free the table. This happens
+	 * because unmap() doesn't free the parent table when it removes a leaf.
+	 */
+	if (old & VIRT_PGTABLE_PTE_TABLE) {
+		io_pgtable_tlb_flush_walk(&viopt->iopt, iova, size,
+					  VIRT_PGTABLE_GRANULE);
+		ptep = virt_iopt_pte_to_va(old);
+		virt_iopt_free_table(viopt, lvl, ptep);
+	} else if (WARN_ON(old)) {
+		return -EEXIST;
+	}
+	return 0;
+}
+
+static int __virt_iopt_map(struct virt_iopt *viopt, unsigned long iova,
+			   phys_addr_t paddr, size_t size, int prot, gfp_t gfp,
+			   int lvl, viopte_t *ptep)
+{
+	viopte_t pte;
+	unsigned int idx;
+	size_t page_size = VIRT_PGTABLE_PAGE_SIZE(lvl);
+
+	idx = VIRT_PGTABLE_IDX(iova, lvl);
+	ptep += idx;
+
+	pte = READ_ONCE(*ptep);
+	if (page_size == size)
+		return virt_iopt_install_pte(viopt, iova, paddr, size, prot,
+					     lvl, ptep, pte);
+
+	/* Next table */
+	if (!(pte & VIRT_PGTABLE_PTE_VALID)) {
+		pte = virt_iopt_install_table(viopt, ptep, pte, gfp);
+		if (!pte)
+			return -EFAULT;
+	} else if (WARN_ON(!(pte & VIRT_PGTABLE_PTE_TABLE))) {
+		return -EEXIST;
+	}
+
+	return __virt_iopt_map(viopt, iova, paddr, size, prot, gfp, lvl + 1,
+			       virt_iopt_pte_to_va(pte));
+}
+
+static int virt_iopt_map(struct io_pgtable_ops *ops, unsigned long iova,
+			 phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
+{
+	int ret;
+	struct virt_iopt *viopt = iopt_ops_to_viopt(ops);
+
+	ret = __virt_iopt_map(viopt, iova, paddr, size, prot, gfp, 0,
+			      viopt->pgd);
+
+	/*
+	 * The device driver can now publish the IOVA. Synchronize against the
+	 * page walker. Pairs with a smp_rmb() on the walker side.
+	 */
+	smp_wmb();
+
+	return ret;
+}
+
+static size_t __virt_iopt_unmap(struct virt_iopt *viopt, unsigned long iova,
+				size_t size, struct iommu_iotlb_gather *gather,
+				int lvl, viopte_t *ptep)
+{
+	viopte_t pte;
+	unsigned int idx;
+	size_t page_size = VIRT_PGTABLE_PAGE_SIZE(lvl);
+
+	idx = VIRT_PGTABLE_IDX(iova, lvl);
+	ptep += idx;
+
+	pte = READ_ONCE(*ptep);
+	if (WARN_ON(!(pte & VIRT_PGTABLE_PTE_VALID)))
+		return 0;
+
+	if (page_size == size) {
+		viopte_t old_pte = xchg_relaxed(ptep, 0);
+
+		WARN_ON(pte != old_pte);
+		if (old_pte & VIRT_PGTABLE_PTE_TABLE) {
+			/* Wait for walks before freeing the table */
+			ptep = virt_iopt_pte_to_va(old_pte);
+			io_pgtable_tlb_flush_walk(&viopt->iopt, iova, size,
+						  VIRT_PGTABLE_GRANULE);
+			virt_iopt_free_table(viopt, lvl, ptep);
+		} else {
+			io_pgtable_tlb_add_page(&viopt->iopt, gather, iova,
+						size);
+		}
+
+		return size;
+	}
+
+	if (WARN_ON(!(pte & VIRT_PGTABLE_PTE_TABLE))) {
+	    /*
+	     * FIXME: do we need to split the block? The mapping tree doesn't
+	     * allow splitting and we've not received complaints yet.
+	     * It will be easy to notice, there is a WARN() in dma-iommu.
+	     */
+	    return 0;
+	}
+
+	return __virt_iopt_unmap(viopt, iova, size, gather, lvl + 1,
+				 virt_iopt_pte_to_va(pte));
+}
+
+static size_t virt_iopt_unmap(struct io_pgtable_ops *ops, unsigned long iova,
+			      size_t size, struct iommu_iotlb_gather *gather)
+{
+	struct virt_iopt *viopt = iopt_ops_to_viopt(ops);
+
+	return __virt_iopt_unmap(viopt, iova, size, gather, 0, viopt->pgd);
+}
+
+static phys_addr_t __virt_iopt_iova_to_phys(struct virt_iopt *viopt,
+					    unsigned long iova, int lvl,
+					    viopte_t *ptep)
+{
+	viopte_t pte;
+	unsigned int idx;
+	unsigned long mask;
+
+	idx = VIRT_PGTABLE_IDX(iova, lvl);
+
+	pte = READ_ONCE(ptep[idx]);
+	if (!(pte & VIRT_PGTABLE_PTE_VALID)) {
+		return 0;
+	} else if (pte & VIRT_PGTABLE_PTE_TABLE) {
+		return __virt_iopt_iova_to_phys(viopt, iova, lvl + 1,
+						virt_iopt_pte_to_va(pte));
+	}
+
+	mask = VIRT_PGTABLE_PAGE_SIZE(lvl) - 1;
+	return (pte & VIRT_PGTABLE_PTE_PFN_MASK(lvl)) | (iova & mask);
+}
+
+static phys_addr_t virt_iopt_iova_to_phys(struct io_pgtable_ops *ops,
+					  unsigned long iova)
+{
+	struct virt_iopt *viopt = iopt_ops_to_viopt(ops);
+
+	return __virt_iopt_iova_to_phys(viopt, iova, 0, viopt->pgd);
+}
+
+static struct io_pgtable *virt_iopt_alloc(struct io_pgtable_cfg *cfg, void *cookie)
+{
+	struct virt_iopt *viopt;
+
+	if (cfg->quirks)
+		return NULL;
+
+	/* Classic for now: 48-bit IOVA, 4kB pages, 4 levels */
+	if (cfg->pgsize_bitmap != 0x40201000 ||
+	    cfg->ias > VIRT_PGTABLE_VA_BITS || cfg->oas > VIRT_PGTABLE_PA_BITS)
+		return NULL;
+
+	viopt = kmalloc(sizeof(*viopt), GFP_KERNEL);
+	if (!viopt)
+		return NULL;
+
+	viopt->pgd = (viopte_t *)get_zeroed_page(GFP_KERNEL);
+	if (!viopt->pgd)
+		goto err_free_viopt;
+	cfg->virt.pgd = virt_to_phys(viopt->pgd);
+
+	viopt->iopt.ops = (struct io_pgtable_ops) {
+		.map		= virt_iopt_map,
+		.unmap		= virt_iopt_unmap,
+		.iova_to_phys	= virt_iopt_iova_to_phys,
+	};
+
+	return &viopt->iopt;
+err_free_viopt:
+	kfree(viopt);
+	return NULL;
+}
+
+static void virt_iopt_free(struct io_pgtable *iopt)
+{
+	struct virt_iopt *viopt = iopt_to_viopt(iopt);
+
+	/* TODO: double-check that it is detached? */
+	virt_iopt_free_table(viopt, 0, viopt->pgd);
+	kfree(viopt);
+}
+
+struct io_pgtable_init_fns io_pgtable_virt_init_fns = {
+	.alloc = virt_iopt_alloc,
+	.free = virt_iopt_free,
+};
