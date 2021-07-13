@@ -1,0 +1,30 @@
+C LB+fencembonceonce+addronceonce
+
+(*
+ * Result: Never
+ *
+ * Page table walk versus table installation
+ *)
+
+{}
+
+P0(int **x)
+{
+	int *r0;
+	int r1;
+
+	r0 = READ_ONCE(*x);
+	r1 = READ_ONCE(*r0);
+}
+
+P1(int **x, int *y)
+{
+	int *r0;
+	int r1;
+
+	WRITE_ONCE(*y, 1);
+	smp_wmb();
+	WRITE_ONCE(*x, y);
+}
+
+exists (0:r0=y /\ 0:r1=0)
