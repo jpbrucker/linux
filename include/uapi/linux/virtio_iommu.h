@@ -19,6 +19,7 @@
 #define VIRTIO_IOMMU_F_BYPASS_CONFIG		6
 #define VIRTIO_IOMMU_F_MQ			7
 #define VIRTIO_IOMMU_F_ATTACH_TABLE		8
+#define VIRTIO_IOMMU_F_POSTED_MAP		9
 
 struct virtio_iommu_range_64 {
 	__le64					start;
@@ -75,6 +76,7 @@ struct virtio_iommu_req_tail {
 };
 
 #define VIRTIO_IOMMU_ATTACH_F_BYPASS		(1 << 0)
+#define VIRTIO_IOMMU_ATTACH_F_POSTED		(1 << 1)
 
 struct virtio_iommu_req_attach {
 	struct virtio_iommu_req_head		head;
