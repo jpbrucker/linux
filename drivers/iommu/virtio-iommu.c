@@ -61,6 +61,7 @@ struct viommu_dev {
 
 	bool				has_map:1;
 	bool				has_table:1;
+	bool				has_posted_map:1;
 };
 
 struct viommu_mapping {
@@ -92,6 +93,7 @@ struct viommu_domain {
 
 	unsigned long			nr_endpoints;
 	bool				bypass;
+	bool				posted_map;
 };
 
 struct viommu_endpoint {
@@ -914,6 +916,7 @@ static int viommu_domain_finalise(struct viommu_endpoint *vdev,
 
 	vdomain->map_flags	= viommu->map_flags;
 	vdomain->viommu		= viommu;
+	vdomain->posted_map	= viommu->has_posted_map;
 
 	if (domain->type == IOMMU_DOMAIN_IDENTITY) {
 		if (virtio_has_feature(viommu->vdev,
@@ -1065,6 +1068,8 @@ static int viommu_simple_attach(struct viommu_domain *vdomain,
 
 	if (vdomain->bypass)
 		req.flags |= cpu_to_le32(VIRTIO_IOMMU_ATTACH_F_BYPASS);
+	else if (vdomain->posted_map)
+		req.flags |= cpu_to_le32(VIRTIO_IOMMU_ATTACH_F_POSTED);
 
 	ret = viommu_send_endpoint_req(vdev, &req, sizeof(req));
 	if (ret)
@@ -1178,7 +1183,18 @@ static int viommu_map_pages(struct iommu_domain *domain, unsigned long iova,
 	if (!vdomain->nr_endpoints)
 		return 0;
 
-	ret = viommu_send_req_sync(vdomain->viommu, &map, sizeof(map));
+	if (vdomain->posted_map) {
+		ret = viommu_add_req(vdomain->viommu,
+				     viommu_get_req_vq(vdomain->viommu), &map,
+				     sizeof(map));
+		/*
+		 * Make sure the request is visible before the device driver
+		 * triggers a DMA
+		 */
+		smp_wmb();
+	} else {
+		ret = viommu_send_req_sync(vdomain->viommu, &map, sizeof(map));
+	}
 	if (ret)
 		viommu_del_mappings(vdomain, iova, end);
 	else if (mapped)
@@ -1624,6 +1640,7 @@ static int viommu_probe(struct virtio_device *vdev)
 
 	viommu->has_map = virtio_has_feature(vdev, VIRTIO_IOMMU_F_MAP_UNMAP);
 	viommu->has_table = virtio_has_feature(vdev, VIRTIO_IOMMU_F_ATTACH_TABLE);
+	viommu->has_posted_map = virtio_has_feature(vdev, VIRTIO_IOMMU_F_POSTED_MAP);
 	if (!viommu->has_table && !viommu->has_map)
 		return -EINVAL;
 
@@ -1719,6 +1736,7 @@ static unsigned int features[] = {
 	VIRTIO_IOMMU_F_BYPASS_CONFIG,
 	VIRTIO_IOMMU_F_MQ,
 	VIRTIO_IOMMU_F_ATTACH_TABLE,
+	VIRTIO_IOMMU_F_POSTED_MAP,
 };
 
 static struct virtio_device_id id_table[] = {
