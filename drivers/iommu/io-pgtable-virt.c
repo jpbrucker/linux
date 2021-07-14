@@ -235,7 +235,7 @@ static size_t viopt_remove_pte(struct virt_iopt *viopt, unsigned long iova,
 			virt_iopt_free_table(viopt, lvl,
 					     virt_iopt_pte_to_va(old_pte));
 			IOPT_DEBUG("freed table (OK)\n");
-		} else {
+		} else if (!iommu_iotlb_gather_queued(gather)) {
 			io_pgtable_tlb_add_page(&viopt->iopt, gather,
 						iova + i * pgsize, pgsize);
 		}
