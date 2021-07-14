@@ -870,6 +870,7 @@ static struct iommu_domain *viommu_domain_alloc(unsigned type)
 
 	if (type != IOMMU_DOMAIN_UNMANAGED &&
 	    type != IOMMU_DOMAIN_DMA &&
+	    type != IOMMU_DOMAIN_DMA_FQ &&
 	    type != IOMMU_DOMAIN_IDENTITY)
 		return NULL;
 
@@ -1287,6 +1288,31 @@ static void viommu_iotlb_sync(struct iommu_domain *domain,
 	}
 }
 
+static void viommu_flush_iotlb_all(struct iommu_domain *domain)
+{
+	struct viommu_domain *vdomain = to_viommu_domain(domain);
+	struct viommu_dev *viommu = vdomain->viommu;
+
+	if (!viommu) {
+		/* No device has been attached to the domain yet */
+		return;
+	}
+
+	struct virtio_iommu_req_invalidate req = {
+		.head.type	= VIRTIO_IOMMU_T_INVALIDATE,
+		.inv_gran	= cpu_to_le16(VIRTIO_IOMMU_INVAL_G_DOMAIN),
+		.inv_type	= cpu_to_le16(VIRTIO_IOMMU_INV_T_IOTLB),
+		.flags		= cpu_to_le16(VIRTIO_IOMMU_INVAL_F_ARCHID),
+		.domain		= cpu_to_le32(vdomain->id),
+		.archid		= cpu_to_le64(vdomain->mm.archid),
+	};
+
+	/* Pairs with the smp_rmb() in __virt_iopt_unmap() */
+	smp_mb();
+	if (viommu_send_req_sync(viommu, &req, sizeof(req)))
+		pr_err("could not send invalidate request\n");
+}
+
 static void viommu_get_resv_regions(struct device *dev, struct list_head *head)
 {
 	struct iommu_resv_region *entry, *new_entry, *msi = NULL;
@@ -1435,6 +1461,7 @@ static struct iommu_ops viommu_ops = {
 	.unmap			= viommu_unmap,
 	.iova_to_phys		= viommu_iova_to_phys,
 	.iotlb_sync		= viommu_iotlb_sync,
+	.flush_iotlb_all	= viommu_flush_iotlb_all,
 	.probe_device		= viommu_probe_device,
 	.probe_finalize		= viommu_probe_finalize,
 	.release_device		= viommu_release_device,
