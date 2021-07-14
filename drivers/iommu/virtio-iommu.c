@@ -1251,9 +1251,16 @@ static void viommu_iotlb_sync(struct iommu_domain *domain,
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
 
 	if (vdomain->mm.ops) {
-		u8 granule = ilog2(gather->pgsize);
-		u64 nr_pages = (gather->end - gather->start + 1) >> granule;
-		struct virtio_iommu_req_invalidate req = {
+		u8 granule;
+		u64 nr_pages;
+		struct virtio_iommu_req_invalidate req;
+
+		if (!gather->pgsize)
+			return;
+
+		granule = ilog2(gather->pgsize);
+		nr_pages = (gather->end - gather->start + 1) >> granule;
+		req = (struct virtio_iommu_req_invalidate) {
 			.head.type	= VIRTIO_IOMMU_T_INVALIDATE,
 			.inv_gran	= cpu_to_le16(VIRTIO_IOMMU_INVAL_G_VA),
 			.inv_type	= cpu_to_le16(VIRTIO_IOMMU_INV_T_IOTLB),
