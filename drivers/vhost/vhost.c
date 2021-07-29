@@ -459,9 +459,7 @@ static size_t vhost_get_desc_size(struct vhost_virtqueue *vq,
 void vhost_dev_init(struct vhost_dev *dev,
 		    struct vhost_virtqueue **vqs, int nvqs,
 		    int iov_limit, int weight, int byte_weight,
-		    bool use_worker,
-		    int (*msg_handler)(struct vhost_dev *dev, u32 asid,
-				       struct vhost_iotlb_msg *msg))
+		    bool use_worker, vhost_msg_handler_t msg_handler)
 {
 	struct vhost_virtqueue *vq;
 	int i;
