@@ -1779,6 +1779,18 @@ static const struct file_operations vhost_net_fops = {
 	.llseek		= noop_llseek,
 };
 
+struct vhost_dev *vhost_net_get_dev(struct file *file)
+{
+	struct vhost_net *n;
+
+	if (file->f_op != &vhost_net_fops)
+		return NULL;
+
+	n = file->private_data;
+	return &n->dev;
+}
+EXPORT_SYMBOL_GPL(vhost_net_get_dev);
+
 static struct miscdevice vhost_net_misc = {
 	.minor = VHOST_NET_MINOR,
 	.name = "vhost-net",

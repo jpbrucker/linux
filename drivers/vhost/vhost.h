@@ -143,6 +143,9 @@ struct vhost_msg_node {
 
 typedef int (*vhost_msg_handler_t)(struct vhost_dev *dev, u32 asid,
 				   struct vhost_iotlb_msg *msg);
+typedef struct vhost_iotlb_map *
+	(*vhost_iommu_translate_t)(struct vhost_virtqueue *vq,
+				   u64 addr, u64 len, int access);
 
 struct vhost_dev {
 	struct mm_struct *mm;
@@ -164,6 +167,10 @@ struct vhost_dev {
 	u64 kcov_handle;
 	bool use_worker;
 	vhost_msg_handler_t msg_handler;
+
+	/* For vhost-iommu */
+	vhost_iommu_translate_t iommu_translate;
+	void *iommu_cookie;
 };
 
 bool vhost_exceeds_weight(struct vhost_virtqueue *vq, int pkts, int total_len);
@@ -326,4 +333,9 @@ static inline bool vhost_access_denied(int access, int perm)
 {
 	return access & ~perm;
 }
+
+void vhost_dev_set_iommu(struct vhost_dev *dev,
+			 vhost_iommu_translate_t fn, void *cookie);
+
+struct vhost_dev *vhost_net_get_dev(struct file *file);
 #endif

@@ -477,12 +477,13 @@ void vhost_dev_init(struct vhost_dev *dev,
 	dev->byte_weight = byte_weight;
 	dev->use_worker = use_worker;
 	dev->msg_handler = msg_handler;
+	dev->iommu_translate = NULL;
+	dev->iommu_cookie = NULL;
 	init_llist_head(&dev->work_list);
 	init_waitqueue_head(&dev->wait);
 	INIT_LIST_HEAD(&dev->read_list);
 	INIT_LIST_HEAD(&dev->pending_list);
 	spin_lock_init(&dev->iotlb_lock);
-
 
 	for (i = 0; i < dev->nvqs; ++i) {
 		vq = dev->vqs[i];
@@ -1079,6 +1080,30 @@ static bool umem_access_ok(u64 uaddr, u64 size, int access)
 	    !access_ok((void __user *)a, size))
 		return false;
 	return true;
+}
+
+/*
+ * Set or clear the viommu translate function called for each DMA access.
+ * The function fills the device IOTLB
+ */
+void vhost_dev_set_iommu(struct vhost_dev *dev,
+			 vhost_iommu_translate_t fn, void *cookie)
+{
+	/*
+	 * Synchronize against vhost_iotlb_translate(), which is called while
+	 * holding the VQ mutex.
+	 *
+	 * TODO: The vhost core could call a vhost_iommu_release_t callback when
+	 * freeing the vdev, so vhost-iommu can release it.
+	 */
+	vhost_dev_lock_vqs(dev);
+	if (dev->iotlb)
+		vhost_iotlb_reset(dev->iotlb);
+	vhost_vq_meta_reset(dev);
+
+	dev->iommu_translate = fn;
+	dev->iommu_cookie = cookie;
+	vhost_dev_unlock_vqs(dev);
 }
 
 static int vhost_process_iotlb_msg(struct vhost_dev *dev, u32 asid,
