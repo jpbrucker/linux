@@ -233,6 +233,8 @@ int vhost_init_device_iotlb(struct vhost_dev *d, bool enabled);
 
 void vhost_iotlb_map_free(struct vhost_iotlb *iotlb,
 			  struct vhost_iotlb_map *map);
+void vhost_vq_meta_reset(struct vhost_dev *d);
+void vhost_vq_meta_inval(struct vhost_dev *d, struct vhost_iotlb_map *map);
 
 #define vq_err(vq, fmt, ...) do {                                  \
 		pr_debug(pr_fmt(fmt), ##__VA_ARGS__);       \

@@ -282,13 +282,34 @@ static void __vhost_vq_meta_reset(struct vhost_virtqueue *vq)
 		vq->meta_iotlb[j] = NULL;
 }
 
-static void vhost_vq_meta_reset(struct vhost_dev *d)
+void vhost_vq_meta_reset(struct vhost_dev *d)
 {
 	int i;
 
 	for (i = 0; i < d->nvqs; ++i)
 		__vhost_vq_meta_reset(d->vqs[i]);
 }
+EXPORT_SYMBOL_GPL(vhost_vq_meta_reset);
+
+/*
+ * Invalidate all vq iotlb entries that use this mapping
+ * TODO: does this improve perf over plain reset?
+ * vdev->mutex and all vq->mutex are held
+ */
+void vhost_vq_meta_inval(struct vhost_dev *d, struct vhost_iotlb_map *map)
+{
+	int i, j;
+
+	for (i = 0; i < d->nvqs; ++i) {
+		struct vhost_virtqueue *vq = d->vqs[i];
+
+		for (j = 0; j < VHOST_NUM_ADDRS; j++) {
+			if (map == vq->meta_iotlb[j])
+				vq->meta_iotlb[j] = NULL;
+		}
+	}
+}
+EXPORT_SYMBOL_GPL(vhost_vq_meta_inval);
 
 static void vhost_vring_call_reset(struct vhost_vring_call *call_ctx)
 {
