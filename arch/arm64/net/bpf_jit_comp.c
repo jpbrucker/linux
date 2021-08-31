@@ -1229,7 +1229,7 @@ static int bpf_prog_poke(unsigned long pc, enum bpf_text_poke_location l,
 	int ret;
 	u32 old_insn, new_insn;
 
-	if (IS_ENABLED(CONFIG_ARM64_BTI_KERNEL))
+	if (l == BPF_POKE_FUNC_ENTRY && IS_ENABLED(CONFIG_ARM64_BTI_KERNEL))
 		pc += AARCH64_INSN_SIZE;
 
 	if (old_addr)
@@ -1541,9 +1541,9 @@ static int invoke_bpf(const struct btf_func_model *m, struct jit_ctx *ctx,
 	return 0;
 }
 
-static int gen_trampoline(struct jit_ctx *ctx, const struct btf_func_model *m,
-			  u32 flags, struct bpf_tramp_progs *tprogs,
-			  void *orig_call)
+static int gen_trampoline(struct bpf_tramp_image *tr, struct jit_ctx *ctx,
+			  const struct btf_func_model *m, u32 flags,
+			  struct bpf_tramp_progs *tprogs, void *orig_call)
 {
 	int i, ret;
 	off_t offset;
@@ -1664,6 +1664,17 @@ static int gen_trampoline(struct jit_ctx *ctx, const struct btf_func_model *m,
 	if (WARN_ON_ONCE(!IS_ALIGNED(ctx->stack_size, 16)))
 		return -EFAULT;
 
+	/*
+	 * If we're calling the original function, call __bpf_tramp_enter(tr)
+	 * first to take a reference to the trampoline and make sure that it
+	 * isn't freed while that function sleeps. See bpf_tramp_image_put()
+	 */
+	if (call_orig) {
+		emit_a64_mov_i64(A64_R(0), (u64)tr, ctx);
+		emit_a64_mov_i64(prog_enter_reg, (u64)__bpf_tramp_enter, ctx);
+		emit(A64_BLR(prog_enter_reg), ctx);
+	}
+
 	/* (1) Call all the fentry programs */
 	ret = invoke_bpf(m, ctx, fentry, NULL, flags, tstamp_reg,
 			 retval_reg, prog_enter_reg, prog_exit_reg);
@@ -1727,6 +1738,15 @@ static int gen_trampoline(struct jit_ctx *ctx, const struct btf_func_model *m,
 		offset = nr_args * 8;
 		emit(A64_MOV(1, retval_reg, A64_R(0)), ctx);
 		emit(A64_STR64_IMM(retval_reg, A64_SP, offset), ctx);
+
+		/*
+		 * bpf_tramp_image_put() patches the trampoline here to skip the
+		 * fexit calls.
+		 * FIXME: Test this.
+		 */
+		if (ctx->image)
+			tr->ip_after_call = ctx->image + ctx->idx;
+		emit(aarch64_insn_gen_nop(), ctx);
 	}
 
 	/*
@@ -1756,6 +1776,17 @@ static int gen_trampoline(struct jit_ctx *ctx, const struct btf_func_model *m,
 			 prog_enter_reg, prog_exit_reg);
 	if (ret)
 		goto out_free;
+
+	if (call_orig) {
+		/* Patched branch ip_after_call jumps here */
+		if (ctx->image)
+			tr->ip_epilogue = ctx->image + ctx->idx;
+
+		/* Call __bpf_tramp_exit(tr) to put the reference to the trampoline */
+		emit_a64_mov_i64(A64_R(0), (u64)tr, ctx);
+		emit_a64_mov_i64(prog_exit_reg, (u64)__bpf_tramp_exit, ctx);
+		emit(A64_BLR(prog_exit_reg), ctx);
+	}
 
 	/*
 	 * Restore fun() args if required, or discard them.
@@ -1812,7 +1843,7 @@ out_free:
  *
  * Returns the number of bytes emitted, or a negative error.
  */
-int arch_prepare_bpf_trampoline(void *image, void *image_end,
+int arch_prepare_bpf_trampoline(struct bpf_tramp_image *tr, void *image, void *image_end,
 				const struct btf_func_model *m, u32 flags,
 				struct bpf_tramp_progs *tprogs,
 				void *orig_call)
@@ -1823,7 +1854,7 @@ int arch_prepare_bpf_trampoline(void *image, void *image_end,
 	struct jit_ctx ctx = {};
 
 	/* First pass to check that we have enough space */
-	ret = gen_trampoline(&ctx, m, flags, tprogs, orig_call);
+	ret = gen_trampoline(tr, &ctx, m, flags, tprogs, orig_call);
 	if (ret < 0)
 		return ret;
 
@@ -1834,7 +1865,7 @@ int arch_prepare_bpf_trampoline(void *image, void *image_end,
 	/* Second pass */
 	ctx.idx = 0;
 	ctx.image = image;
-	ret = gen_trampoline(&ctx, m, flags, tprogs, orig_call);
+	ret = gen_trampoline(tr, &ctx, m, flags, tprogs, orig_call);
 	if (ret < 0)
 		return ret;
 
