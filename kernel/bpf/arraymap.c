@@ -1013,11 +1013,13 @@ static void prog_array_map_poke_run(struct bpf_map *map, u32 key,
 			if (new) {
 				ret = bpf_arch_text_poke(poke->tailcall_target,
 							 BPF_MOD_JUMP,
+							 BPF_POKE_FUNC_ENTRY,
 							 old_addr, new_addr);
 				BUG_ON(ret < 0 && ret != -EINVAL);
 				if (!old) {
 					ret = bpf_arch_text_poke(poke->tailcall_bypass,
 								 BPF_MOD_JUMP,
+								 BPF_POKE_FUNC_ENTRY,
 								 poke->bypass_addr,
 								 NULL);
 					BUG_ON(ret < 0 && ret != -EINVAL);
@@ -1025,6 +1027,7 @@ static void prog_array_map_poke_run(struct bpf_map *map, u32 key,
 			} else {
 				ret = bpf_arch_text_poke(poke->tailcall_bypass,
 							 BPF_MOD_JUMP,
+							 BPF_POKE_FUNC_ENTRY,
 							 old_bypass_addr,
 							 poke->bypass_addr);
 				BUG_ON(ret < 0 && ret != -EINVAL);
@@ -1036,6 +1039,7 @@ static void prog_array_map_poke_run(struct bpf_map *map, u32 key,
 					synchronize_rcu();
 				ret = bpf_arch_text_poke(poke->tailcall_target,
 							 BPF_MOD_JUMP,
+							 BPF_POKE_FUNC_ENTRY,
 							 old_addr, NULL);
 				BUG_ON(ret < 0 && ret != -EINVAL);
 			}

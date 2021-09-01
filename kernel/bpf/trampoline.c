@@ -137,7 +137,8 @@ static int unregister_fentry(struct bpf_trampoline *tr, void *old_addr)
 	if (tr->func.ftrace_managed)
 		ret = unregister_ftrace_direct((long)ip, (long)old_addr);
 	else
-		ret = bpf_arch_text_poke(ip, BPF_MOD_CALL, old_addr, NULL);
+		ret = bpf_arch_text_poke(ip, BPF_MOD_CALL, BPF_POKE_FUNC_ENTRY,
+					 old_addr, NULL);
 
 	if (!ret)
 		bpf_trampoline_module_put(tr);
@@ -152,7 +153,8 @@ static int modify_fentry(struct bpf_trampoline *tr, void *old_addr, void *new_ad
 	if (tr->func.ftrace_managed)
 		ret = modify_ftrace_direct((long)ip, (long)old_addr, (long)new_addr);
 	else
-		ret = bpf_arch_text_poke(ip, BPF_MOD_CALL, old_addr, new_addr);
+		ret = bpf_arch_text_poke(ip, BPF_MOD_CALL, BPF_POKE_FUNC_ENTRY,
+					 old_addr, new_addr);
 	return ret;
 }
 
@@ -173,7 +175,8 @@ static int register_fentry(struct bpf_trampoline *tr, void *new_addr)
 	if (tr->func.ftrace_managed)
 		ret = register_ftrace_direct((long)ip, (long)new_addr);
 	else
-		ret = bpf_arch_text_poke(ip, BPF_MOD_CALL, NULL, new_addr);
+		ret = bpf_arch_text_poke(ip, BPF_MOD_CALL, BPF_POKE_FUNC_ENTRY,
+					 NULL, new_addr);
 
 	if (ret)
 		bpf_trampoline_module_put(tr);
@@ -281,7 +284,8 @@ static void bpf_tramp_image_put(struct bpf_tramp_image *im)
 	 */
 	if (im->ip_after_call) {
 		int err = bpf_arch_text_poke(im->ip_after_call, BPF_MOD_JUMP,
-					     NULL, im->ip_epilogue);
+					     BPF_POKE_FUNC_BODY, NULL,
+					     im->ip_epilogue);
 		WARN_ON(err);
 		if (IS_ENABLED(CONFIG_PREEMPTION))
 			call_rcu_tasks(&im->rcu, __bpf_tramp_image_put_rcu_tasks);
@@ -442,7 +446,8 @@ int bpf_trampoline_link_prog(struct bpf_prog *prog, struct bpf_trampoline *tr)
 			goto out;
 		}
 		tr->extension_prog = prog;
-		err = bpf_arch_text_poke(tr->func.addr, BPF_MOD_JUMP, NULL,
+		err = bpf_arch_text_poke(tr->func.addr, BPF_MOD_JUMP,
+					 BPF_POKE_FUNC_ENTRY, NULL,
 					 prog->bpf_func);
 		goto out;
 	}
@@ -478,6 +483,7 @@ int bpf_trampoline_unlink_prog(struct bpf_prog *prog, struct bpf_trampoline *tr)
 	if (kind == BPF_TRAMP_REPLACE) {
 		WARN_ON_ONCE(!tr->extension_prog);
 		err = bpf_arch_text_poke(tr->func.addr, BPF_MOD_JUMP,
+					 BPF_POKE_FUNC_ENTRY,
 					 tr->extension_prog->bpf_func, NULL);
 		tr->extension_prog = NULL;
 		goto out;

@@ -2331,7 +2331,13 @@ enum bpf_text_poke_type {
 	BPF_MOD_JUMP,
 };
 
+enum bpf_text_poke_location {
+	BPF_POKE_FUNC_ENTRY,
+	BPF_POKE_FUNC_BODY,
+};
+
 int bpf_arch_text_poke(void *ip, enum bpf_text_poke_type t,
+		       enum bpf_text_poke_location l,
 		       void *addr1, void *addr2);
 
 struct btf_id_set;

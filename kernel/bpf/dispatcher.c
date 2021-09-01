@@ -122,7 +122,8 @@ static void bpf_dispatcher_update(struct bpf_dispatcher *d, int prev_num_progs)
 			return;
 	}
 
-	err = bpf_arch_text_poke(d->func, BPF_MOD_JUMP, old, new);
+	err = bpf_arch_text_poke(d->func, BPF_MOD_JUMP, BPF_POKE_FUNC_ENTRY,
+				 old, new);
 	if (err || !new)
 		return;
 
