@@ -801,6 +801,8 @@ static int viommu_map_pages(struct iommu_domain *domain, unsigned long iova,
 	struct virtio_iommu_req_map map;
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
 
+	BUG_ON(vdomain->bypass);
+
 	flags = (prot & IOMMU_READ ? VIRTIO_IOMMU_MAP_F_READ : 0) |
 		(prot & IOMMU_WRITE ? VIRTIO_IOMMU_MAP_F_WRITE : 0) |
 		(prot & IOMMU_MMIO ? VIRTIO_IOMMU_MAP_F_MMIO : 0);
@@ -843,6 +845,8 @@ static size_t viommu_unmap_pages(struct iommu_domain *domain, unsigned long iova
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
 	size_t size = pgsize * pgcount;
 
+	BUG_ON(vdomain->bypass);
+
 	unmapped = viommu_del_mappings(vdomain, iova, iova + size - 1);
 	if (unmapped < size)
 		return 0;
@@ -870,6 +874,8 @@ static phys_addr_t viommu_iova_to_phys(struct iommu_domain *domain,
 	struct viommu_mapping *mapping;
 	struct interval_tree_node *node;
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
+
+	BUG_ON(vdomain->bypass);
 
 	spin_lock_irqsave(&vdomain->mappings_lock, flags);
 	node = interval_tree_iter_first(&vdomain->mappings, iova, iova);
