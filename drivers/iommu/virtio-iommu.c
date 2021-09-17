@@ -78,6 +78,7 @@ struct viommu_endpoint {
 	struct device			*dev;
 	struct viommu_dev		*viommu;
 	struct viommu_domain		*vdomain;
+	struct device_link		*devlink;
 	struct list_head		resv_regions;
 };
 
@@ -951,6 +952,13 @@ static struct iommu_device *viommu_probe_device(struct device *dev)
 
 	vdev->dev = dev;
 	vdev->viommu = viommu;
+	/* Remove endpoints before removing the viommu */
+	vdev->devlink = device_link_add(dev, viommu->dev, DL_FLAG_STATELESS);
+	if (!vdev->devlink) {
+		ret = -ENOLINK;
+		goto err_free_dev;
+	}
+
 	INIT_LIST_HEAD(&vdev->resv_regions);
 	dev_iommu_priv_set(dev, vdev);
 
@@ -958,11 +966,13 @@ static struct iommu_device *viommu_probe_device(struct device *dev)
 		/* Get additional information for this endpoint */
 		ret = viommu_probe_endpoint(viommu, dev);
 		if (ret)
-			goto err_free_dev;
+			goto err_remove_devlink;
 	}
 
 	return &viommu->iommu;
 
+err_remove_devlink:
+	device_link_del(vdev->devlink);
 err_free_dev:
 	generic_iommu_put_resv_regions(dev, &vdev->resv_regions);
 	kfree(vdev);
@@ -989,6 +999,7 @@ static void viommu_release_device(struct device *dev)
 
 	vdev = dev_iommu_priv_get(dev);
 
+	device_link_del(vdev->devlink);
 	generic_iommu_put_resv_regions(dev, &vdev->resv_regions);
 	kfree(vdev);
 }
