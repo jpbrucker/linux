@@ -696,7 +696,12 @@ static int virtio_mmio_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static void virtio_mmio_shutdown(struct platform_device *pdev)
+{
+	struct virtio_mmio_device *vm_dev = platform_get_drvdata(pdev);
 
+	shutdown_virtio_device(&vm_dev->vdev);
+}
 
 /* Devices list parameter */
 
@@ -840,6 +845,7 @@ MODULE_DEVICE_TABLE(acpi, virtio_mmio_acpi_match);
 static struct platform_driver virtio_mmio_driver = {
 	.probe		= virtio_mmio_probe,
 	.remove		= virtio_mmio_remove,
+	.shutdown	= virtio_mmio_shutdown,
 	.driver		= {
 		.name	= "virtio-mmio",
 		.of_match_table	= virtio_mmio_match,

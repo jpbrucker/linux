@@ -606,6 +606,13 @@ static void virtio_pci_remove(struct pci_dev *pci_dev)
 	put_device(dev);
 }
 
+static void virtio_pci_shutdown(struct pci_dev *pci_dev)
+{
+	struct virtio_pci_device *vp_dev = pci_get_drvdata(pci_dev);
+
+	shutdown_virtio_device(&vp_dev->vdev);
+}
+
 static int virtio_pci_sriov_configure(struct pci_dev *pci_dev, int num_vfs)
 {
 	struct virtio_pci_device *vp_dev = pci_get_drvdata(pci_dev);
@@ -638,6 +645,7 @@ static struct pci_driver virtio_pci_driver = {
 	.id_table	= virtio_pci_id_table,
 	.probe		= virtio_pci_probe,
 	.remove		= virtio_pci_remove,
+	.shutdown	= virtio_pci_shutdown,
 #ifdef CONFIG_PM_SLEEP
 	.driver.pm	= &virtio_pci_pm_ops,
 #endif

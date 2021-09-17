@@ -485,6 +485,15 @@ void unregister_virtio_device(struct virtio_device *dev)
 }
 EXPORT_SYMBOL_GPL(unregister_virtio_device);
 
+void shutdown_virtio_device(struct virtio_device *dev)
+{
+	struct virtio_driver *drv = drv_to_virtio(dev->dev.driver);
+
+	if (drv && drv->shutdown)
+		drv->shutdown(dev);
+}
+EXPORT_SYMBOL_GPL(shutdown_virtio_device);
+
 #ifdef CONFIG_PM_SLEEP
 int virtio_device_freeze(struct virtio_device *dev)
 {
