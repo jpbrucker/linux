@@ -1365,22 +1365,43 @@ static void vhost_vq_meta_update(struct vhost_virtqueue *vq,
 		vq->meta_iotlb[type] = map;
 }
 
+static const struct vhost_iotlb_map *
+vhost_iotlb_translate(struct vhost_virtqueue *vq, u64 addr, u64 len, int access)
+{
+	struct vhost_dev *dev = vq->dev;
+	struct vhost_iotlb *umem = dev->iotlb ? : dev->umem;
+	const struct vhost_iotlb_map *map;
+	u64 last = addr + len - 1;
+
+	map = vhost_iotlb_itree_first(umem, addr, last);
+	if (map && map->start <= addr)
+		return map;
+	else if (!dev->iotlb)
+		return NULL;
+
+	/*
+	 * If map->start > addr, we're missing bits in the range. Try finding
+	 * the translation
+	 */
+	if (dev->iommu_translate)
+		return dev->iommu_translate(vq, addr, len, access);
+
+	vhost_iotlb_miss(vq, addr, access);
+	return NULL;
+}
+
 static bool iotlb_access_ok(struct vhost_virtqueue *vq,
 			    int access, u64 addr, u64 len, int type)
 {
 	const struct vhost_iotlb_map *map;
-	struct vhost_iotlb *umem = vq->iotlb;
-	u64 s = 0, size, orig_addr = addr, last = addr + len - 1;
+	u64 s = 0, size, orig_addr = addr;
 
 	if (vhost_vq_meta_fetch(vq, addr, len, type))
 		return true;
 
 	while (len > s) {
-		map = vhost_iotlb_itree_first(umem, addr, last);
-		if (map == NULL || map->start > addr) {
-			vhost_iotlb_miss(vq, addr, access);
-			return false;
-		} else if (vhost_access_denied(access, map->perm)) {
+		map = vhost_iotlb_translate(vq, addr, len, access);
+		if (map == NULL || vhost_access_denied(access, map->perm)) {
 			/* Report the possible access violation by
 			 * request another translation from userspace.
 			 */
@@ -2082,10 +2103,9 @@ static int translate_desc(struct vhost_virtqueue *vq, u64 addr, u32 len,
 {
 	const struct vhost_iotlb_map *map;
 	struct vhost_dev *dev = vq->dev;
-	struct vhost_iotlb *umem = dev->iotlb ? dev->iotlb : dev->umem;
 	struct iovec *_iov;
-	u64 s = 0, last = addr + len - 1;
 	int ret = 0;
+	u64 s = 0;
 
 	while ((u64)len > s) {
 		u64 size;
@@ -2094,13 +2114,9 @@ static int translate_desc(struct vhost_virtqueue *vq, u64 addr, u32 len,
 			break;
 		}
 
-		map = vhost_iotlb_itree_first(umem, addr, last);
-		if (map == NULL || map->start > addr) {
-			if (umem != dev->iotlb) {
-				ret = -EFAULT;
-				break;
-			}
-			ret = -EAGAIN;
+		map = vhost_iotlb_translate(vq, addr, len - s, access);
+		if (map == NULL) {
+			ret = dev->iotlb ? -EAGAIN : -EFAULT;
 			break;
 		} else if (vhost_access_denied(access, map->perm)) {
 			ret = -EPERM;
@@ -2116,9 +2132,6 @@ static int translate_desc(struct vhost_virtqueue *vq, u64 addr, u32 len,
 		addr += size;
 		++ret;
 	}
-
-	if (ret == -EAGAIN)
-		vhost_iotlb_miss(vq, addr, access);
 	return ret;
 }
 
