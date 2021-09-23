@@ -792,6 +792,8 @@ static inline void __user *vhost_vq_meta_fetch(struct vhost_virtqueue *vq,
 {
 	const struct vhost_iotlb_map *map = vq->meta_iotlb[type];
 
+	lockdep_assert_held(&vq->mutex);
+
 	if (!map)
 		return NULL;
 
@@ -1373,6 +1375,8 @@ vhost_iotlb_translate(struct vhost_virtqueue *vq, u64 addr, u64 len, int access)
 	const struct vhost_iotlb_map *map;
 	u64 last = addr + len - 1;
 
+	lockdep_assert_held(&vq->mutex);
+
 	map = vhost_iotlb_itree_first(umem, addr, last);
 	if (map && map->start <= addr)
 		return map;
@@ -1786,6 +1790,8 @@ int vhost_init_device_iotlb(struct vhost_dev *d, bool enabled)
 	struct vhost_iotlb *niotlb, *oiotlb;
 	int i;
 
+	lockdep_assert_held(&d->mutex);
+
 	niotlb = iotlb_alloc();
 	if (!niotlb)
 		return -ENOMEM;
@@ -2106,6 +2112,8 @@ static int translate_desc(struct vhost_virtqueue *vq, u64 addr, u32 len,
 	struct iovec *_iov;
 	int ret = 0;
 	u64 s = 0;
+
+	lockdep_assert_held(&vq->mutex);
 
 	while ((u64)len > s) {
 		u64 size;
