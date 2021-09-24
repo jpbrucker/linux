@@ -32,6 +32,8 @@
 
 #include "vhost.h"
 
+#include "../iommu/io-pgtable-virt.h"
+
 /*
  * Operations of the vhost-iommu, and locking notes.
  * - Translate:
@@ -73,7 +75,8 @@ enum {
 enum {
 	VHOST_IOMMU_FEATURES = VHOST_FEATURES |
 				(1ULL << VIRTIO_IOMMU_F_INPUT_RANGE) |
-				(1ULL << VIRTIO_IOMMU_F_MAP_UNMAP)
+				(1ULL << VIRTIO_IOMMU_F_MAP_UNMAP) |
+				(1ULL << VIRTIO_IOMMU_F_ATTACH_TABLE)
 };
 
 #define VHOST_IOMMU_MAX_REQ_LEN	0x1000
@@ -117,7 +120,126 @@ struct vhost_iommu_domain {
 	struct list_head		endpoints;
 	uint32_t			id;
 	struct kref			kref;
+	viopte_t __user			*pgd;
 };
+
+static viopte_t __user *
+vhost_iommu_ptw_translate_table(struct vhost_dev *dev, u64 gpa)
+{
+	const struct vhost_iotlb_map *map;
+
+	map = vhost_iotlb_itree_first(dev->umem, gpa,
+				      gpa + VIRT_PGTABLE_TABLE_SIZE - 1);
+	if (!map || map->start > gpa || map->size < VIRT_PGTABLE_TABLE_SIZE ||
+	    vhost_access_denied(VHOST_MAP_RW, map->perm)) {
+		return NULL;
+	}
+	return (void __user *)map->addr + (gpa - map->start);
+}
+
+static struct vhost_iotlb_map *
+vhost_iommu_ptw(struct vhost_iommu_domain *domain, struct vhost_iotlb_map *map,
+		viopte_t __user *ptep, int lvl)
+{
+	int idx;
+	u32 perm;
+	u64 gpa;
+	viopte_t pte;
+	unsigned long mask;
+
+	BUG_ON(lvl < 0);
+
+	if (lvl > VIRT_PGTABLE_LAST_LEVEL) {
+		/* The last level table shouldn't have a table entry */
+		pr_err("### %s Last table had a table entry\n", __func__);
+		return NULL;
+	}
+
+	idx = VIRT_PGTABLE_IDX(map->start, lvl);
+
+	/*
+	 * idx is user input, but since we shift and mask it can't overflow (and
+	 * can't be used for speculative attacks).
+	 */
+	BUG_ON(idx >= VIRT_PGTABLE_NUM_PTES); /* XXX devel */
+
+//	pr_debug("### %s(%llx) lvl %d %px[%d]\n", __func__, map->start, lvl,
+//		 ptep, idx);
+
+	/* For atomic RMW, we're going to need pin_user_pages_fast() */
+	get_user(pte, ptep + idx);
+	if (!(pte & VIRT_PGTABLE_PTE_VALID)) {
+		pr_err("### %s translation fault at 0x%llx\n", __func__,
+		       map->start);
+		return NULL;
+	} else if (pte & VIRT_PGTABLE_PTE_TABLE) {
+		/* Translate table GPA to HVA */
+		gpa = pte & VIRT_PGTABLE_PTE_PFN_MASK(VIRT_PGTABLE_LAST_LEVEL);
+
+		/*
+		 * FIXME: we can't take the request vq mutex because we're
+		 * already holding endpoint vq mutex, and the order is
+		 * iommu vq -> endpoint vq (which happens during invalidate).
+		 * So we to the translation manually, which I believe is safe,
+		 * but still need to write the justification.
+		 */
+		ptep = vhost_iommu_ptw_translate_table(&domain->vi->dev, gpa);
+		if (!ptep) {
+			pr_err("### %s Cannot map ptep 0x%llx at lvl %d\n",
+			       __func__, gpa, lvl);
+			return NULL;
+		}
+
+		return vhost_iommu_ptw(domain, map, ptep, lvl + 1);
+	}
+
+	mask = VIRT_PGTABLE_PAGE_SIZE(lvl) - 1;
+	/* Adjust bounds. FIXME: what if new end < old end? */
+	map->last = ALIGN_DOWN(map->start, mask + 1) + mask;
+	map->size = map->last - map->start + 1;
+
+	if (pte & VIRT_PGTABLE_PTE_READ)
+		perm |= VHOST_MAP_RO;
+	if (pte & VIRT_PGTABLE_PTE_WRITE)
+		perm |= VHOST_MAP_WO;
+	if (vhost_access_denied(map->perm, perm)) {
+		pr_err("### %s: permission fault\n", __func__);
+		return NULL;
+	}
+	map->perm = perm;
+
+	gpa = (pte & VIRT_PGTABLE_PTE_PFN_MASK(lvl)) | (map->start & mask);
+	map->addr = gpa;
+	pr_debug("### %s (%llx, %llx) -> %llx [%x]\n", __func__, map->start,
+		 map->last, map->addr, perm);
+	return map;
+}
+
+/*
+ * Translate virtual @addr to a guest-physical address
+ * @domain:	domain to perform the access in
+ * @addr:	input virtual address
+ * @end:	end of the virtual range
+ * @access:	access flags
+ * @map:	output map, where the translation result is written
+ *
+ * Return map on success, NULL on error
+ */
+static struct vhost_iotlb_map *
+vhost_iommu_domain_translate_ptw(struct vhost_iommu_domain *domain, u64 addr,
+				 u64 end, int access,
+				 struct vhost_iotlb_map *map)
+{
+	map->start = addr;
+	map->last = end;
+	map->size = end - addr + 1;
+	map->perm = access;
+
+	/* Synchronize against the page table driver */
+	smp_rmb();
+
+	return vhost_iommu_ptw(domain, map, domain->pgd, 0);
+}
 
 static struct vhost_iotlb_map *
 vhost_iommu_domain_translate(struct vhost_iommu_domain *domain, u64 addr,
@@ -125,7 +247,7 @@ vhost_iommu_domain_translate(struct vhost_iommu_domain *domain, u64 addr,
 {
 	struct vhost_iotlb_map *map;
 
-	lockdep_assert_held(&domain->mappings_mutex);
+	lockdep_assert_held(&domain->mappings_mutex); /* needed by ptw? */
 
 	map = vhost_iotlb_itree_first(domain->mappings, addr, end);
 	if (!map || vhost_access_denied(access, map->perm)) {
@@ -140,12 +262,17 @@ vhost_iommu_domain_translate(struct vhost_iommu_domain *domain, u64 addr,
 	return map;
 }
 
+/*
+ * @vq: endpoint virtqueue
+ */
 static struct vhost_iotlb_map *vhost_iommu_translate(struct vhost_virtqueue *vq,
 						     u64 addr, u64 len, int access)
 {
 	int ret;
 	off_t off;
 	u64 last = addr + len - 1;
+	struct vhost_iommu_domain *domain;
+	struct vhost_iotlb_map ptw_map = {};
 	struct vhost_iotlb_map *map, *user_map, *new;
 	struct vhost_iommu_endpoint *ep = vq->dev->iommu_cookie;
 
@@ -162,9 +289,15 @@ static struct vhost_iotlb_map *vhost_iommu_translate(struct vhost_virtqueue *vq,
 		mutex_unlock(&ep->domain_mutex);
 		return NULL;
 	}
+	domain = ep->domain;
 
-	mutex_lock(&ep->domain->mappings_mutex);
-	map = vhost_iommu_domain_translate(ep->domain, addr, last, access);
+	mutex_lock(&domain->mappings_mutex);
+	if (domain->pgd)
+		map = vhost_iommu_domain_translate_ptw(domain, addr, last,
+						       access, &ptw_map);
+	else
+		map = vhost_iommu_domain_translate(ep->domain, addr, last,
+						   access);
 	/*
 	 * It's allowed for the mapping not to cover the end of the range.
 	 * Caller will retry for the rest of the range.
@@ -213,7 +346,7 @@ static struct vhost_iotlb_map *vhost_iommu_translate(struct vhost_virtqueue *vq,
 	if (WARN_ON(ret))
 		goto err_unlock;
 
-	mutex_unlock(&ep->domain->mappings_mutex);
+	mutex_unlock(&domain->mappings_mutex);
 	mutex_unlock(&ep->domain_mutex);
 
 	/* FIXME: faster to return the map we just allocated */
@@ -222,7 +355,7 @@ static struct vhost_iotlb_map *vhost_iommu_translate(struct vhost_virtqueue *vq,
 	return new;
 
 err_unlock:
-	mutex_unlock(&ep->domain->mappings_mutex);
+	mutex_unlock(&domain->mappings_mutex);
 	mutex_unlock(&ep->domain_mutex);
 	return NULL;
 }
@@ -326,6 +459,14 @@ static void vhost_iommu_inval_ep_all(struct vhost_iommu_endpoint *ep)
 	}
 }
 
+static void vhost_iommu_inval_all(struct vhost_iommu_domain *domain)
+{
+	struct vhost_iommu_endpoint *ep;
+
+	list_for_each_entry(ep, &domain->endpoints, list_domain)
+		vhost_iommu_inval_ep_all(ep);
+}
+
 static int vhost_iommu_handle_map(struct vhost_iommu_device *vi,
 				  struct vhost_virtqueue *vq,
 				  struct virtio_iommu_req_map *req)
@@ -424,6 +565,69 @@ err_unlock:
 	return ret;
 }
 
+static int vhost_iommu_handle_invalidate(struct vhost_iommu_device *vi,
+					 struct vhost_virtqueue *vq,
+					 struct virtio_iommu_req_invalidate *req)
+{
+	u8 caches_mask = VIRTIO_IOMMU_INV_T_IOTLB |
+			 VIRTIO_IOMMU_INV_T_DEV_IOTLB;
+	struct vhost_iommu_domain *domain;
+	u64 virt_start, virt_end, nr_pages;
+	u16 inv_type, inv_gran;
+	u32 domain_id;
+	u16 flags;
+
+	flags = vhost16_to_cpu(vq, req->flags);
+	domain_id = vhost32_to_cpu(vq, req->domain);
+	virt_start = vhost64_to_cpu(vq, req->virt_start);
+	nr_pages = vhost64_to_cpu(vq, req->nr_pages);
+	virt_end = virt_start + nr_pages * (1 << req->granule) - 1;
+
+	if (virt_end < virt_start) {
+		pr_err("### %s invalid range %llx %llx %x\n", __func__,
+		       virt_start, nr_pages, req->granule);
+		return VIRTIO_IOMMU_S_INVAL;
+	}
+
+	/* For now treat TLB and EP_TLB caches the same way. */
+	inv_type = vhost16_to_cpu(vq, req->inv_type);
+	if (!inv_type || (inv_type & ~caches_mask)) {
+		pr_err("### %s invalid caches %x\n", __func__, inv_type);
+		return VIRTIO_IOMMU_S_INVAL;
+	}
+
+	if (flags & ~(VIRTIO_IOMMU_INVAL_F_LEAF | VIRTIO_IOMMU_INVAL_F_ARCHID)) {
+		pr_err("### %s invalid flags %x\n", __func__, flags);
+		return VIRTIO_IOMMU_S_INVAL;
+	}
+
+	domain = vhost_iommu_find_domain(vi, domain_id);
+	if (!domain) {
+		pr_err("### %s invalid domain %d\n", __func__, domain_id);
+		return VIRTIO_IOMMU_S_INVAL;
+	}
+
+	inv_gran = vhost16_to_cpu(vq, req->inv_gran);
+	switch (inv_gran) {
+	case VIRTIO_IOMMU_INVAL_G_DOMAIN:
+		pr_debug("### %s inv dom %d\n", __func__, domain_id);
+		vhost_iommu_inval_all(domain);
+		break;
+	case VIRTIO_IOMMU_INVAL_G_VA:
+		pr_debug("### %s inv range %d 0x%llx 0x%llx\n", __func__,
+			 domain_id, virt_start, virt_end);
+		vhost_iommu_inval_mapping(domain, virt_start, virt_end);
+		break;
+	default:
+		pr_err("### %s unexpected scope %d\n", __func__, inv_gran);
+		vhost_iommu_put_domain(vi, domain);
+		return VIRTIO_IOMMU_S_INVAL;
+	}
+
+	vhost_iommu_put_domain(vi, domain);
+	return VIRTIO_IOMMU_S_OK;
+}
+
 static int vhost_iommu_insert_domain(struct vhost_iommu_device *vi,
 				     struct vhost_iommu_domain *new_domain)
 {
@@ -513,18 +717,14 @@ static int vhost_iommu_detach_endpoint(struct vhost_iommu_device *vi,
 	return 0;
 }
 
-static int vhost_iommu_handle_attach(struct vhost_iommu_device *vi,
-				     struct vhost_virtqueue *vq,
-				     struct virtio_iommu_req_attach *req)
+static int __vhost_iommu_handle_attach(struct vhost_iommu_device *vi,
+				       struct vhost_virtqueue *vq,
+				       uint32_t domain_id, uint32_t epid,
+				       struct vhost_iommu_endpoint **out_ep,
+				       struct vhost_iommu_domain **out_domain)
 {
-	uint32_t domain_id, epid;
 	struct vhost_iommu_endpoint *ep;
 	struct vhost_iommu_domain *domain;
-
-	domain_id = vhost32_to_cpu(vq, req->domain);
-	epid = vhost32_to_cpu(vq, req->endpoint);
-
-	pr_debug("%s e=%x d=%x\n", __func__, epid, domain_id);
 
 	ep = vhost_iommu_get_endpoint(vi, epid);
 	if (!ep) {
@@ -550,7 +750,75 @@ static int vhost_iommu_handle_attach(struct vhost_iommu_device *vi,
 
 	list_add(&ep->list_domain, &domain->endpoints);
 
+	*out_ep = ep;
+	*out_domain = domain;
+
 	return VIRTIO_IOMMU_S_OK;
+}
+
+static int vhost_iommu_handle_attach(struct vhost_iommu_device *vi,
+				     struct vhost_virtqueue *vq,
+				     struct virtio_iommu_req_attach *req)
+{
+	uint32_t domain_id, epid;
+	struct vhost_iommu_endpoint *ep;
+	struct vhost_iommu_domain *domain;
+
+	domain_id = vhost32_to_cpu(vq, req->domain);
+	epid = vhost32_to_cpu(vq, req->endpoint);
+
+	pr_debug("%s e=%x d=%x\n", __func__, epid, domain_id);
+	return __vhost_iommu_handle_attach(vi, vq, domain_id, epid, &ep,
+					   &domain);
+}
+
+static int vhost_iommu_handle_attach_table(struct vhost_iommu_device *vi,
+					   struct vhost_virtqueue *vq,
+					   struct virtio_iommu_req_attach_table *req)
+{
+	int ret;
+	uint32_t domain_id, epid;
+	struct vhost_iommu_endpoint *ep;
+	struct vhost_iommu_domain *domain;
+
+	domain_id = vhost32_to_cpu(vq, req->domain);
+	epid = vhost32_to_cpu(vq, req->endpoint);
+
+	pr_debug("%s e=%x d=%x\n", __func__, epid, domain_id);
+	ret = __vhost_iommu_handle_attach(vi, vq, domain_id, epid,
+					  &ep, &domain);
+	if (ret)
+		return ret;
+
+	switch (le16_to_cpu(req->format)) {
+	case VIRTIO_IOMMU_FORMAT_PGTF_VIRT: {
+		struct virtio_iommu_req_attach_pgt_virt *vreq = (void *)req;
+
+		u64 pgd_gpa = le64_to_cpu(vreq->pgd);
+
+		/* Map the pgd */
+		domain->pgd = vhost_iommu_ptw_translate_table(vq->dev, pgd_gpa);
+		if (!domain->pgd) {
+			pr_err("### %s Cannot map pgd 0x%llx\n", __func__,
+			       pgd_gpa);
+			ret = -EFAULT;
+			goto err_detach;
+		}
+		/* FIXME: lifetime of this mapping? */
+		pr_debug("### %s PGD at GPA 0x%llx, ptr %px\n", __func__,
+			 pgd_gpa, domain->pgd);
+		break;
+	}
+	default:
+		ret = VIRTIO_IOMMU_S_UNSUPP;
+		goto err_detach;
+	}
+	return 0;
+
+err_detach:
+	vhost_iommu_detach_endpoint(vi, ep);
+	vhost_iommu_put_domain(vi, domain);
+	return ret;
 }
 
 static int vhost_iommu_handle_detach(struct vhost_iommu_device *vi,
@@ -661,9 +929,16 @@ static void vhost_iommu_handle_req(struct vhost_iommu_device *vi,
 		}
 		iov_iter_init(&in_iter, READ, &vq->iov[out], in, in_sz);
 
+		/*
+		 * TODO: typecheck. input size must be at least as large as the
+		 * struct we expect.
+		 */
 		switch (req->type) {
 		case VIRTIO_IOMMU_T_ATTACH:
 			resp_tail.status = vhost_iommu_handle_attach(vi, vq, buf);
+			break;
+		case VIRTIO_IOMMU_T_ATTACH_TABLE:
+			resp_tail.status = vhost_iommu_handle_attach_table(vi, vq, buf);
 			break;
 		case VIRTIO_IOMMU_T_DETACH:
 			resp_tail.status = vhost_iommu_handle_detach(vi, vq, buf);
@@ -673,6 +948,9 @@ static void vhost_iommu_handle_req(struct vhost_iommu_device *vi,
 			break;
 		case VIRTIO_IOMMU_T_UNMAP:
 			resp_tail.status = vhost_iommu_handle_unmap(vi, vq, buf);
+			break;
+		case VIRTIO_IOMMU_T_INVALIDATE:
+			resp_tail.status = vhost_iommu_handle_invalidate(vi, vq, buf);
 			break;
 		case VIRTIO_IOMMU_T_PROBE: {
 			uint8_t *payload_ptr;
@@ -746,6 +1024,7 @@ static int vhost_iommu_xlate(struct vhost_iommu_device *vi,
 	u64 size = xlate->imsg.size;
 	u32 access = xlate->imsg.perm;
 	struct vhost_iotlb_map *map;
+	struct vhost_iotlb_map ptw_map;
 	struct vhost_iommu_endpoint *ep;
 	struct vhost_iommu_domain *domain;
 
@@ -765,8 +1044,13 @@ static int vhost_iommu_xlate(struct vhost_iommu_device *vi,
 	}
 
 	mutex_lock(&domain->mappings_mutex);
-	map = vhost_iommu_domain_translate(domain, addr, addr + size - 1,
-					   access);
+	if (domain->pgd)
+		map = vhost_iommu_domain_translate_ptw(domain, addr,
+						       addr + size - 1, access,
+						       &ptw_map);
+	else
+		map = vhost_iommu_domain_translate(domain, addr,
+						   addr + size - 1, access);
 	if (map) {
 		BUG_ON(map->start > addr || map->last < addr);
 		xlate->imsg.uaddr = map->addr + addr - map->start;
@@ -1022,7 +1306,6 @@ static void vhost_iommu_cleanup(struct vhost_iommu_device *vi)
 	}
 	mutex_unlock(&vi->mutex);
 }
-
 
 static int vhost_iommu_start_vq(struct vhost_iommu_device *vi,
 				struct vhost_virtqueue *vq)
