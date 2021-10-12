@@ -51,6 +51,7 @@ struct viommu_dev {
 	/* Supported MAP flags */
 	u32				map_flags;
 	u32				probe_size;
+	u8				boot_bypass;
 };
 
 struct viommu_mapping {
@@ -1153,6 +1154,15 @@ static int viommu_probe(struct virtio_device *vdev)
 	if (virtio_has_feature(vdev, VIRTIO_IOMMU_F_MMIO))
 		viommu->map_flags |= VIRTIO_IOMMU_MAP_F_MMIO;
 
+	if (virtio_has_feature(vdev, VIRTIO_IOMMU_F_BYPASS_CONFIG)) {
+		u8 bypass = iommu_default_passthrough();
+
+		virtio_cread(vdev, struct virtio_iommu_config, bypass,
+			     &viommu->boot_bypass);
+		virtio_cwrite(vdev, struct virtio_iommu_config, bypass,
+			      &bypass);
+	}
+
 	viommu_ops.pgsize_bitmap = viommu->pgsize_bitmap;
 
 	virtio_device_ready(vdev);
@@ -1191,6 +1201,12 @@ static void viommu_remove(struct virtio_device *vdev)
 {
 	struct viommu_dev *viommu = vdev->priv;
 
+	/* Restore boot-bypass, otherwise we may not be able to reboot */
+	if (virtio_has_feature(vdev, VIRTIO_IOMMU_F_BYPASS_CONFIG))
+		virtio_cwrite(vdev, struct virtio_iommu_config, bypass,
+			      &viommu->boot_bypass);
+
+	iommu_device_sysfs_remove(&viommu->iommu);
 	iommu_device_unregister(&viommu->iommu);
 	iommu_device_sysfs_remove(&viommu->iommu);
 
@@ -1229,6 +1245,7 @@ static struct virtio_driver virtio_iommu_drv = {
 	.feature_table_size	= ARRAY_SIZE(features),
 	.probe			= viommu_probe,
 	.remove			= viommu_remove,
+	.shutdown		= viommu_remove,
 	.config_changed		= viommu_config_changed,
 };
 
