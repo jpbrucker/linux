@@ -55,6 +55,7 @@ struct vhost_iotlb_msg {
 #define VHOST_ACCESS_RO      0x1
 #define VHOST_ACCESS_WO      0x2
 #define VHOST_ACCESS_RW      0x3
+#define VHOST_ACCESS_MMIO    (1 << 2)
 	__u8 perm;
 #define VHOST_IOTLB_MISS           1
 #define VHOST_IOTLB_UPDATE         2

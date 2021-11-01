@@ -111,6 +111,8 @@ struct vhost_iommu_device {
 
 struct vhost_iommu_domain {
 	struct vhost_iommu_device	*vi;
+	struct vhost_iotlb		*mappings;
+	struct mutex			mappings_mutex;
 	struct rb_node			node;
 	struct list_head		endpoints;
 	uint32_t			id;
@@ -162,6 +164,44 @@ static void vhost_iommu_put_domain(struct vhost_iommu_device *vi,
 	kref_put(&domain->kref, vhost_iommu_remove_domain);
 }
 
+static void vhost_iommu_inval_mapping(struct vhost_iommu_domain *domain,
+				      uint64_t start, uint64_t last)
+{
+	struct vhost_iommu_endpoint_fd *epfd;
+	struct vhost_iommu_endpoint *ep;
+	struct vhost_iotlb_map *map;
+	struct vhost_dev *vdev;
+	int i;
+
+	/*
+	 * Can't hold the mappings mutex while invalidating, since it is taken
+	 * in reverse order by translate() while holding vq->mutex. So take
+	 * vq->mutex instead.
+	 */
+	lockdep_assert_held(&domain->vi->mutex);
+
+	list_for_each_entry(ep, &domain->endpoints, list_domain) {
+		list_for_each_entry(epfd, &ep->fds, list) {
+			vdev = epfd->dev;
+
+			for (i = 0; i < vdev->nvqs; ++i)
+				mutex_lock_nested(&vdev->vqs[i]->mutex, i);
+
+			while ((map = vhost_iotlb_itree_first(vdev->iotlb, start, last)) != NULL) {
+				vhost_iotlb_map_free(vdev->iotlb, map);
+				/*
+				 * map is freed, but this function doesn't dereference
+				 * it, only compares pointers.
+				 */
+				vhost_vq_meta_inval(vdev, map);
+			}
+
+			for (i = 0; i < vdev->nvqs; ++i)
+				mutex_unlock(&vdev->vqs[i]->mutex);
+		}
+	}
+}
+
 static void vhost_iommu_inval_ep_all(struct vhost_iommu_endpoint *ep)
 {
 	struct vhost_dev *vdev;
@@ -176,6 +216,104 @@ static void vhost_iommu_inval_ep_all(struct vhost_iommu_endpoint *ep)
 		vhost_iotlb_reset(vdev->iotlb);
 		vhost_dev_unlock_vqs(vdev);
 	}
+}
+
+static int vhost_iommu_handle_map(struct vhost_iommu_device *vi,
+				  struct vhost_virtqueue *vq,
+				  struct virtio_iommu_req_map *req)
+{
+	uint64_t phys_start, virt_start, virt_end;
+	struct vhost_iommu_domain *domain;
+	uint32_t domain_id, flags, perm;
+	int ret;
+
+	domain_id = vhost32_to_cpu(vq, req->domain);
+	phys_start = vhost64_to_cpu(vq, req->phys_start);
+	virt_start = vhost64_to_cpu(vq, req->virt_start);
+	virt_end = vhost64_to_cpu(vq, req->virt_end);
+	flags = vhost32_to_cpu(vq, req->flags);
+	// TODO: check alignment
+
+	if (flags & ~VIRTIO_IOMMU_MAP_F_MASK)
+		return VIRTIO_IOMMU_S_INVAL;
+
+	domain = vhost_iommu_find_domain(vi, domain_id);
+	if (!domain)
+		return VIRTIO_IOMMU_S_NOENT;
+
+	perm = (flags & VIRTIO_IOMMU_MAP_F_READ ? VHOST_ACCESS_RO : 0) |
+	       (flags & VIRTIO_IOMMU_MAP_F_WRITE ? VHOST_ACCESS_WO : 0) |
+	       (flags & VIRTIO_IOMMU_MAP_F_MMIO ? VHOST_ACCESS_MMIO : 0);
+
+	mutex_lock(&domain->mappings_mutex);
+	if (vhost_iotlb_itree_first(domain->mappings, virt_start, virt_end)) {
+		ret = VIRTIO_IOMMU_S_INVAL;
+		goto out_unlock;
+	}
+
+	ret = vhost_iotlb_add_range(domain->mappings, virt_start, virt_end,
+				    phys_start, perm);
+	if (ret) {
+		ret = VIRTIO_IOMMU_S_INVAL;
+		goto out_unlock;
+	}
+
+	ret = VIRTIO_IOMMU_S_OK;
+out_unlock:
+	mutex_unlock(&domain->mappings_mutex);
+	vhost_iommu_put_domain(vi, domain);
+
+	return ret;
+}
+
+static int vhost_iommu_handle_unmap(struct vhost_iommu_device *vi,
+				    struct vhost_virtqueue *vq,
+				    struct virtio_iommu_req_unmap *req)
+{
+	uint64_t virt_start, virt_end, size;
+	struct vhost_iommu_domain *domain;
+	struct vhost_iotlb_map *map;
+	uint32_t domain_id;
+	int ret = VIRTIO_IOMMU_S_OK;
+
+	domain_id = vhost32_to_cpu(vq, req->domain);
+	virt_start = vhost64_to_cpu(vq, req->virt_start);
+	virt_end = vhost64_to_cpu(vq, req->virt_end);
+	size = virt_end - virt_start + 1;
+
+	domain = vhost_iommu_find_domain(vi, domain_id);
+	if (!domain)
+		return VIRTIO_IOMMU_S_NOENT;
+
+	mutex_lock(&domain->mappings_mutex);
+	map = vhost_iotlb_itree_first(domain->mappings, virt_start, virt_end);
+	if (!map) {
+		ret = VIRTIO_IOMMU_S_OK;
+		goto err_unlock;
+	}
+
+	while (map) {
+		if (virt_start > map->start || virt_end < map->last) {
+			/* Removing part of a mapping is not allowed */
+			ret = VIRTIO_IOMMU_S_INVAL;
+			break;
+		}
+		vhost_iotlb_map_free(domain->mappings, map);
+
+		map = vhost_iotlb_itree_first(domain->mappings, virt_start,
+					      virt_end);
+	}
+	mutex_unlock(&domain->mappings_mutex);
+
+	vhost_iommu_inval_mapping(domain, virt_start, virt_end);
+
+	vhost_iommu_put_domain(vi, domain);
+	return ret;
+
+err_unlock:
+	mutex_unlock(&domain->mappings_mutex);
+	vhost_iommu_put_domain(vi, domain);
+	return ret;
 }
 
 static int vhost_iommu_insert_domain(struct vhost_iommu_device *vi,
@@ -221,6 +359,8 @@ vhost_iommu_get_domain(struct vhost_iommu_device *vi, uint32_t domain_id)
 
 	domain->vi = vi;
 	domain->id = domain_id;
+	domain->mappings = vhost_iotlb_alloc(0, 0);
+	mutex_init(&domain->mappings_mutex);
 	INIT_LIST_HEAD(&domain->endpoints);
 	kref_init(&domain->kref);
 
@@ -239,6 +379,7 @@ static void vhost_iommu_remove_domain(struct kref *kref)
 
 	lockdep_assert_held(&vi->mutex);
 
+	vhost_iotlb_free(domain->mappings);
 	rb_erase(&domain->node, &vi->rbroot_domain);
 	kfree(domain);
 }
@@ -418,6 +559,12 @@ static void vhost_iommu_handle_req(struct vhost_iommu_device *vi,
 			break;
 		case VIRTIO_IOMMU_T_DETACH:
 			resp_tail.status = vhost_iommu_handle_detach(vi, vq, buf);
+			break;
+		case VIRTIO_IOMMU_T_MAP:
+			resp_tail.status = vhost_iommu_handle_map(vi, vq, buf);
+			break;
+		case VIRTIO_IOMMU_T_UNMAP:
+			resp_tail.status = vhost_iommu_handle_unmap(vi, vq, buf);
 			break;
 		case VIRTIO_IOMMU_T_PROBE: {
 			uint8_t *payload_ptr;
