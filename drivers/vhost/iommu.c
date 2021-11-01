@@ -82,7 +82,10 @@ enum {
 
 struct vhost_iommu_endpoint {
 	struct list_head		list_iommu;
+	struct list_head		list_domain;
 	struct list_head		fds;
+	struct mutex			domain_mutex;
+	struct vhost_iommu_domain	*domain;
 	void				*probe_buffer;
 	uint32_t			probe_size;
 	uint32_t			epid;
@@ -97,12 +100,21 @@ struct vhost_iommu_endpoint_fd {
 struct vhost_iommu_device {
 	struct vhost_dev		dev;
 	struct list_head		endpoints;
+	struct rb_root			rbroot_domain;
 	/* Protect rbtree and endpoints updates */
 	struct mutex			mutex;
 	struct vhost_virtqueue		vq_req;
 	struct vhost_virtqueue		vq_evt;
 	char				buf[VHOST_IOMMU_MAX_REQ_LEN];
 	bool				running;
+};
+
+struct vhost_iommu_domain {
+	struct vhost_iommu_device	*vi;
+	struct rb_node			node;
+	struct list_head		endpoints;
+	uint32_t			id;
+	struct kref			kref;
 };
 
 static struct vhost_iommu_endpoint *
@@ -117,6 +129,199 @@ vhost_iommu_get_endpoint(struct vhost_iommu_device *vi, uint32_t epid)
 			return ep;
 	}
 	return NULL;
+}
+
+static struct vhost_iommu_domain *
+vhost_iommu_find_domain(struct vhost_iommu_device *vi, uint32_t domain_id)
+{
+	struct vhost_iommu_domain *domain;
+	struct rb_node *node = vi->rbroot_domain.rb_node;
+
+	lockdep_assert_held(&vi->mutex);
+
+	while (node) {
+		domain = rb_entry(node, struct vhost_iommu_domain, node);
+
+		if (domain->id > domain_id) {
+			node = node->rb_left;
+		} else if (domain->id < domain_id) {
+			node = node->rb_right;
+		} else {
+			kref_get(&domain->kref);
+			return domain;
+		}
+	}
+	return NULL;
+}
+
+static void vhost_iommu_remove_domain(struct kref *kref);
+
+static void vhost_iommu_put_domain(struct vhost_iommu_device *vi,
+				   struct vhost_iommu_domain *domain)
+{
+	kref_put(&domain->kref, vhost_iommu_remove_domain);
+}
+
+static void vhost_iommu_inval_ep_all(struct vhost_iommu_endpoint *ep)
+{
+	struct vhost_dev *vdev;
+	struct vhost_iommu_endpoint_fd *epfd;
+
+	/* Invalidate endpoints IOTLBs */
+	list_for_each_entry(epfd, &ep->fds, list) {
+		vdev = epfd->dev;
+
+		vhost_dev_lock_vqs(vdev);
+		vhost_vq_meta_reset(vdev);
+		vhost_iotlb_reset(vdev->iotlb);
+		vhost_dev_unlock_vqs(vdev);
+	}
+}
+
+static int vhost_iommu_insert_domain(struct vhost_iommu_device *vi,
+				     struct vhost_iommu_domain *new_domain)
+{
+	struct rb_node **link = &vi->rbroot_domain.rb_node, *parent = NULL;
+	uint32_t domain_id = new_domain->id;
+	struct vhost_iommu_domain *domain;
+
+	lockdep_assert_held(&vi->mutex);
+
+	/* Go to the bottom of the tree */
+	while (*link) {
+		parent = *link;
+		domain = rb_entry(parent, struct vhost_iommu_domain, node);
+
+		if (domain->id > domain_id)
+			link = &(*link)->rb_left;
+		else if (domain->id < domain_id)
+			link = &(*link)->rb_right;
+		else
+			return -EEXIST;
+	}
+
+	/* Put the new node there */
+	rb_link_node(&new_domain->node, parent, link);
+	rb_insert_color(&new_domain->node, &vi->rbroot_domain);
+	return 0;
+}
+
+static struct vhost_iommu_domain *
+vhost_iommu_get_domain(struct vhost_iommu_device *vi, uint32_t domain_id)
+{
+	struct vhost_iommu_domain *domain;
+
+	domain = vhost_iommu_find_domain(vi, domain_id);
+	if (domain)
+		return domain;
+
+	domain = kzalloc(sizeof(*domain), GFP_KERNEL);
+	if (!domain)
+		return NULL;
+
+	domain->vi = vi;
+	domain->id = domain_id;
+	INIT_LIST_HEAD(&domain->endpoints);
+	kref_init(&domain->kref);
+
+	if (WARN_ON(vhost_iommu_insert_domain(vi, domain))) {
+		kfree(domain);
+		return NULL;
+	}
+	return domain;
+}
+
+static void vhost_iommu_remove_domain(struct kref *kref)
+{
+	struct vhost_iommu_domain *domain = container_of(kref,
+					 struct vhost_iommu_domain, kref);
+	struct vhost_iommu_device *vi = domain->vi;
+
+	lockdep_assert_held(&vi->mutex);
+
+	rb_erase(&domain->node, &vi->rbroot_domain);
+	kfree(domain);
+}
+
+static int vhost_iommu_detach_endpoint(struct vhost_iommu_device *vi,
+				       struct vhost_iommu_endpoint *ep)
+{
+	struct vhost_iommu_domain *domain = ep->domain;
+
+	if (!domain)
+		return 0;
+
+	pr_debug("%s d=%x\n", __func__, domain->id);
+
+	mutex_lock(&ep->domain_mutex); /* Sync against translate() */
+	ep->domain = NULL;
+	mutex_unlock(&ep->domain_mutex);
+
+	vhost_iommu_inval_ep_all(ep);
+
+	list_del(&ep->list_domain);
+	vhost_iommu_put_domain(vi, domain);
+	return 0;
+}
+
+static int vhost_iommu_handle_attach(struct vhost_iommu_device *vi,
+				     struct vhost_virtqueue *vq,
+				     struct virtio_iommu_req_attach *req)
+{
+	uint32_t domain_id, epid;
+	struct vhost_iommu_endpoint *ep;
+	struct vhost_iommu_domain *domain;
+
+	domain_id = vhost32_to_cpu(vq, req->domain);
+	epid = vhost32_to_cpu(vq, req->endpoint);
+
+	pr_debug("%s e=%x d=%x\n", __func__, epid, domain_id);
+
+	ep = vhost_iommu_get_endpoint(vi, epid);
+	if (!ep) {
+		pr_debug("%s no ep\n", __func__);
+		return VIRTIO_IOMMU_S_NOENT;
+	}
+
+	domain = vhost_iommu_get_domain(vi, domain_id);
+	if (!domain) {
+		pr_debug("%s no domain\n", __func__);
+		return VIRTIO_IOMMU_S_NOENT;
+	}
+
+	if (vhost_iommu_detach_endpoint(vi, ep)) {
+		vhost_iommu_put_domain(vi, domain);
+		return VIRTIO_IOMMU_S_DEVERR;
+	}
+
+	mutex_lock(&ep->domain_mutex);
+	/* Holds reference to domain */
+	ep->domain = domain;
+	mutex_unlock(&ep->domain_mutex);
+
+	list_add(&ep->list_domain, &domain->endpoints);
+
+	return VIRTIO_IOMMU_S_OK;
+}
+
+static int vhost_iommu_handle_detach(struct vhost_iommu_device *vi,
+				     struct vhost_virtqueue *vq,
+				     struct virtio_iommu_req_detach *req)
+{
+	uint32_t epid;
+	struct vhost_iommu_endpoint *ep;
+
+	epid = vhost32_to_cpu(vq, req->endpoint);
+	pr_debug("%s e=%x\n", __func__, epid);
+
+	ep = vhost_iommu_get_endpoint(vi, epid);
+	if (!ep)
+		return VIRTIO_IOMMU_S_NOENT;
+
+	if (vhost_iommu_detach_endpoint(vi, ep))
+		return VIRTIO_IOMMU_S_NOENT;
+
+	return VIRTIO_IOMMU_S_OK;
 }
 
 static int vhost_iommu_handle_probe(struct vhost_iommu_device *vi,
@@ -208,6 +413,12 @@ static void vhost_iommu_handle_req(struct vhost_iommu_device *vi,
 		iov_iter_init(&in_iter, READ, &vq->iov[out], in, in_sz);
 
 		switch (req->type) {
+		case VIRTIO_IOMMU_T_ATTACH:
+			resp_tail.status = vhost_iommu_handle_attach(vi, vq, buf);
+			break;
+		case VIRTIO_IOMMU_T_DETACH:
+			resp_tail.status = vhost_iommu_handle_detach(vi, vq, buf);
+			break;
 		case VIRTIO_IOMMU_T_PROBE: {
 			uint8_t *payload_ptr;
 
@@ -407,6 +618,7 @@ static int vhost_iommu_register_endpoint(struct vhost_iommu_device *vi,
 		}
 
 		ep->epid = cfg->id;
+		mutex_init(&ep->domain_mutex);
 		INIT_LIST_HEAD(&ep->fds);
 	}
 
@@ -442,6 +654,7 @@ static void vhost_iommu_remove_endpoint(struct vhost_iommu_device *vi,
 					struct vhost_iommu_endpoint *ep)
 {
 	vhost_iommu_remove_all_endpoint_fds(vi, ep);
+	vhost_iommu_detach_endpoint(vi, ep);
 	list_del(&ep->list_iommu);
 	kfree(ep->probe_buffer);
 	kfree(ep);
@@ -477,11 +690,22 @@ static int vhost_iommu_unregister_endpoint(struct vhost_iommu_device *vi,
 static void vhost_iommu_cleanup(struct vhost_iommu_device *vi)
 {
 	struct vhost_iommu_endpoint *ep, *next_ep;
+	struct vhost_iommu_domain *domain, *next_domain;
 
 	mutex_lock(&vi->mutex);
 	/* Drop all endpoints */
 	list_for_each_entry_safe(ep, next_ep, &vi->endpoints, list_iommu)
 		vhost_iommu_remove_endpoint(vi, ep);
+
+	rbtree_postorder_for_each_entry_safe(domain, next_domain,
+					     &vi->rbroot_domain, node) {
+		/*
+		 * Since we detached all endpoints, there shouldn't be any
+		 * domain left
+		 */
+		WARN_ON_ONCE(1);
+		vhost_iommu_put_domain(vi, domain);
+	}
 	mutex_unlock(&vi->mutex);
 }
 
@@ -541,8 +765,18 @@ static int vhost_iommu_start(struct vhost_iommu_device *vi)
 
 static int vhost_iommu_stop(struct vhost_iommu_device *vi)
 {
+	struct vhost_iommu_endpoint *ep;
+
 	vhost_iommu_stop_vq(vi, &vi->vq_req);
 	vhost_iommu_stop_vq(vi, &vi->vq_evt);
+
+	mutex_lock(&vi->mutex);
+	list_for_each_entry(ep, &vi->endpoints, list_iommu)
+		vhost_iommu_detach_endpoint(vi, ep);
+
+	WARN_ON_ONCE(rb_first(&vi->rbroot_domain));
+	mutex_unlock(&vi->mutex);
+
 	vi->running = false;
 	return 0;
 }
@@ -685,6 +919,7 @@ static int vhost_iommu_open(struct inode *inode, struct file *f)
 
 	dev = &vi->dev;
 	INIT_LIST_HEAD(&vi->endpoints);
+	vi->rbroot_domain = RB_ROOT;
 	mutex_init(&vi->mutex);
 	vqs[VHOST_IOMMU_VQ_REQUEST] = &vi->vq_req;
 	vqs[VHOST_IOMMU_VQ_EVENT] = &vi->vq_evt;
