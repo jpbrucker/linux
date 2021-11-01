@@ -189,6 +189,11 @@ struct vhost_iommu_register_endpoint {
 	__u64		probe_buffer;
 };
 
+struct vhost_iommu_xlate {
+	struct vhost_iotlb_msg imsg;
+	__u32	epid;
+};
+
 /* Feature bits */
 /* Log all write descriptors. Can be changed while device is active. */
 #define VHOST_F_LOG_ALL 26

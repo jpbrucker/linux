@@ -732,6 +732,61 @@ static void vhost_iommu_handle_req_work(struct vhost_work *work)
 }
 
 /*
+ * FIXME: xlate is fundamentally flawed, because we never invalidate the mapping
+ * obtained by userspace. UNMAP needs to notify userspace so it can synchronize
+ * its DMA. And if we do have this we might as well send all requests to
+ * userspace. Problem with that is on domains attached to both kernel and
+ * userspace endpoints, but we could just reject that.
+ */
+static int vhost_iommu_xlate(struct vhost_iommu_device *vi,
+			     struct vhost_iommu_xlate *xlate)
+{
+	int ret = 0;
+	u64 addr = xlate->imsg.iova;
+	u64 size = xlate->imsg.size;
+	u32 access = xlate->imsg.perm;
+	struct vhost_iotlb_map *map;
+	struct vhost_iommu_endpoint *ep;
+	struct vhost_iommu_domain *domain;
+
+	mutex_lock(&vi->mutex);
+	ep = vhost_iommu_get_endpoint(vi, xlate->epid);
+	if (!ep) {
+		ret = -ENODEV;
+		goto err_unlock;
+	}
+
+	mutex_lock(&ep->domain_mutex);
+	domain = ep->domain;
+	if (!domain) { /* FIXME: bypass */
+		pr_debug("%s: ep %x is not attached\n", __func__, xlate->epid);
+		ret = -EFAULT;
+		goto err_unlock_domain;
+	}
+
+	mutex_lock(&domain->mappings_mutex);
+	map = vhost_iommu_domain_translate(domain, addr, addr + size - 1,
+					   access);
+	if (map) {
+		BUG_ON(map->start > addr || map->last < addr);
+		xlate->imsg.uaddr = map->addr + addr - map->start;
+		pr_debug("%s: xlate(0x%llx 0x%llx 0x%x) -> 0x%llx\n", __func__,
+			 addr, size, access, xlate->imsg.uaddr);
+	} else {
+		pr_debug("%s: xlate(0x%llx 0x%llx 0x%x) fault\n", __func__,
+			 addr, size, access);
+		ret = -EFAULT;
+	}
+	mutex_unlock(&domain->mappings_mutex);
+err_unlock_domain:
+	mutex_unlock(&ep->domain_mutex);
+err_unlock:
+	mutex_unlock(&vi->mutex);
+
+	return ret;
+}
+
+/*
  * Add or remove the probe buffer for this endpoint.
  * On success @buf and @size contain the new buffer.
  */
@@ -1106,6 +1161,7 @@ static long vhost_iommu_ioctl(struct file *f, unsigned int ioctl,
 	struct vhost_iommu_device *vi = f->private_data;
 	struct vhost_iommu_register_endpoint ep;
 	void __user *argp = (void __user *)arg;
+	struct vhost_iommu_xlate xlate;
 	u64 __user *featurep = argp;
 	u64 features;
 	u8 status;
@@ -1116,6 +1172,19 @@ static long vhost_iommu_ioctl(struct file *f, unsigned int ioctl,
 
 	mutex_lock(&vi->dev.mutex);
 	switch (ioctl) {
+	case VHOST_IOMMU_XLATE:
+		if (copy_from_user(&xlate, argp, sizeof(xlate))) {
+			ret = -EFAULT;
+			break;
+		}
+
+		ret = vhost_iommu_xlate(vi, &xlate);
+		if (ret)
+			break;
+
+		if (copy_to_user(argp, &xlate, sizeof(xlate)))
+			ret = -EFAULT;
+		break;
 	case VHOST_IOMMU_REGISTER_ENDPOINT:
 		if (copy_from_user(&ep, argp, sizeof(ep))) {
 			ret = -EFAULT;

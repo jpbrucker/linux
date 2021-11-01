@@ -191,5 +191,7 @@
  * Resetting the device clears all domains and mappings.
  */
 #define VHOST_IOMMU_SET_STATUS		_IOW(VHOST_VIRTIO, 0x91, __u8)
+#define VHOST_IOMMU_XLATE		_IOWR(VHOST_VIRTIO, 0x93, \
+					      struct vhost_iommu_xlate)
 
 #endif
