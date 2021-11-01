@@ -1118,7 +1118,7 @@ static int iotlb_translate(const struct vringh *vrh,
 		if (!map || map->start > addr) {
 			ret = -EINVAL;
 			break;
-		} else if (!(map->perm & perm)) {
+		} else if (perm & ~map->perm) {
 			ret = -EPERM;
 			break;
 		}

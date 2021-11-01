@@ -1331,7 +1331,7 @@ static void vhost_vq_meta_update(struct vhost_virtqueue *vq,
 	int access = (type == VHOST_ADDR_USED) ?
 		     VHOST_ACCESS_WO : VHOST_ACCESS_RO;
 
-	if (likely(map->perm & access))
+	if (likely(!vhost_access_denied(access, map->perm)))
 		vq->meta_iotlb[type] = map;
 }
 
@@ -1350,7 +1350,7 @@ static bool iotlb_access_ok(struct vhost_virtqueue *vq,
 		if (map == NULL || map->start > addr) {
 			vhost_iotlb_miss(vq, addr, access);
 			return false;
-		} else if (!(map->perm & access)) {
+		} else if (vhost_access_denied(access, map->perm)) {
 			/* Report the possible access violation by
 			 * request another translation from userspace.
 			 */
@@ -2072,7 +2072,7 @@ static int translate_desc(struct vhost_virtqueue *vq, u64 addr, u32 len,
 			}
 			ret = -EAGAIN;
 			break;
-		} else if (!(map->perm & access)) {
+		} else if (vhost_access_denied(access, map->perm)) {
 			ret = -EPERM;
 			break;
 		}

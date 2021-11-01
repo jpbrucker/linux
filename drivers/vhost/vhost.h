@@ -321,4 +321,9 @@ static inline __virtio64 cpu_to_vhost64(struct vhost_virtqueue *vq, u64 val)
 {
 	return __cpu_to_virtio64(vhost_is_little_endian(vq), val);
 }
+
+static inline bool vhost_access_denied(int access, int perm)
+{
+	return access & ~perm;
+}
 #endif
