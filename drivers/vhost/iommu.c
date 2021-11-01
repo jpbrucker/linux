@@ -119,6 +119,114 @@ struct vhost_iommu_domain {
 	struct kref			kref;
 };
 
+static struct vhost_iotlb_map *
+vhost_iommu_domain_translate(struct vhost_iommu_domain *domain, u64 addr,
+			     u64 end, int access)
+{
+	struct vhost_iotlb_map *map;
+
+	lockdep_assert_held(&domain->mappings_mutex);
+
+	map = vhost_iotlb_itree_first(domain->mappings, addr, end);
+	if (!map || vhost_access_denied(access, map->perm)) {
+		if (map)
+			pr_debug("%s: permission fault got %x want %x\n",
+				 __func__, map->perm, access);
+		return NULL;
+	}
+
+	/* TODO: Enqueue page fault if necessary */
+
+	return map;
+}
+
+static struct vhost_iotlb_map *vhost_iommu_translate(struct vhost_virtqueue *vq,
+						     u64 addr, u64 len, int access)
+{
+	int ret;
+	off_t off;
+	u64 last = addr + len - 1;
+	struct vhost_iotlb_map *map, *user_map, *new;
+	struct vhost_iommu_endpoint *ep = vq->dev->iommu_cookie;
+
+	lockdep_assert_held(&vq->mutex); /* Endpoint vq */
+
+	/*
+	 * ep is not going away while we hold vq->mutex.
+	 * For now we rely on domain_mutex to synchronize against detach()
+	 */
+	mutex_lock(&ep->domain_mutex);
+	if (!ep || !ep->domain) {
+		/* TODO: allow bypass if enabled */
+		vq_err(vq, "translation fault: no ep/domain\n");
+		mutex_unlock(&ep->domain_mutex);
+		return NULL;
+	}
+
+	mutex_lock(&ep->domain->mappings_mutex);
+	map = vhost_iommu_domain_translate(ep->domain, addr, last, access);
+	/*
+	 * It's allowed for the mapping not to cover the end of the range.
+	 * Caller will retry for the rest of the range.
+	 */
+	if (!map || WARN_ON(addr < map->start)) {
+		vq_err(vq, "translation fault: no mapping for 0x%llx\n", addr);
+		goto err_unlock;
+	} else if (vhost_access_denied(access, map->perm)) { /* FIXME: parent returns NULL */
+		vq_err(vq, "permission fault at 0x%llx\n", addr);
+		goto err_unlock;
+	}
+
+	/* Great, we found the IOVA->GPA translation. Now find GPA->HVA. */
+	user_map = vhost_iotlb_itree_first(vq->umem, map->addr,
+					   map->addr + map->size - 1);
+	if (!user_map) {
+		vq_err(vq, "translation fault: no user mapping\n");
+		goto err_unlock;
+	} else if (vhost_access_denied(access, user_map->perm)) {
+		vq_err(vq, "permission fault at 0x%llx (user)\n", addr);
+		goto err_unlock;
+	}
+
+	/*
+	 * For the moment, assume that the second-stage mapping contains all of
+	 * the first one. If it didn't we'd just need to loop over the GPA
+	 * range, but I'm feeling lazy and optimistic at the moment.
+	 *
+	 * The reasons we're using the device iotlb instead of directly
+	 * modifying the mappings tree:
+	 * - We'd need to update mappings here to add the gva, and a
+	 *  'translated' flag.
+	 * - We'd need to split mappings if multiple user_map cover this
+	 *   gpa range.
+	 * - User is allowed to switch umem at runtime, which will require to
+	 *   invalidate the IOTLB (TODO). If we implemented the two points
+	 *   above, there is no way we could roll back when umem gets switched.
+	 */
+	if (WARN_ON(user_map->start > map->addr ||
+		    user_map->last < map->addr + map->size - 1))
+		goto err_unlock;
+
+	off = map->addr - user_map->start;
+	ret = vhost_iotlb_add_range(vq->dev->iotlb, map->start, map->last,
+			      user_map->addr + off, map->perm & user_map->perm);
+	if (WARN_ON(ret))
+		goto err_unlock;
+
+	mutex_unlock(&ep->domain->mappings_mutex);
+	mutex_unlock(&ep->domain_mutex);
+
+	/* FIXME: faster to return the map we just allocated */
+	new = vhost_iotlb_itree_first(vq->dev->iotlb, addr, last);
+	WARN(!new, "%llx %llx - %llx %llx\n", addr, last, map->start, map->last);
+	return new;
+
+err_unlock:
+	mutex_unlock(&ep->domain->mappings_mutex);
+	mutex_unlock(&ep->domain_mutex);
+	return NULL;
+}
+
 static struct vhost_iommu_endpoint *
 vhost_iommu_get_endpoint(struct vhost_iommu_device *vi, uint32_t epid)
 {
@@ -670,6 +778,7 @@ static int vhost_iommu_remove_endpoint_fd(struct vhost_iommu_device *vi,
 
 	list_for_each_entry(epfd, &ep->fds, list) {
 		if (epfd->fd == fd) {
+			vhost_dev_set_iommu(epfd->dev, NULL, NULL);
 			list_del(&epfd->list);
 			kfree(epfd);
 
@@ -686,6 +795,7 @@ static void vhost_iommu_remove_all_endpoint_fds(struct vhost_iommu_device *vi,
 	struct vhost_iommu_endpoint_fd *epfd, *next_epfd;
 
 	list_for_each_entry_safe(epfd, next_epfd, &ep->fds, list) {
+		vhost_dev_set_iommu(epfd->dev, NULL, NULL);
 		list_del(&epfd->list);
 		kfree(epfd);
 	}
@@ -734,6 +844,7 @@ static int vhost_iommu_update_endpoint_fd(struct vhost_iommu_device *vi,
 	}
 
 	list_add(&epfd->list, &ep->fds);
+	vhost_dev_set_iommu(epfd->dev, vhost_iommu_translate, ep);
 out_fput:
 	fput(file);
 	return ret;
@@ -753,6 +864,7 @@ static int vhost_iommu_register_endpoint(struct vhost_iommu_device *vi,
 	/*
 	 * No concurrent attach/detach/register.
 	 * But concurrent translate(), so beware!
+	 * vhost_dev_set_iommu() must synchronize against translate().
 	 */
 	mutex_lock(&vi->mutex);
 
