@@ -1014,20 +1014,6 @@ static inline int vhost_put_used_idx(struct vhost_virtqueue *vq)
 #define vhost_get_used(vq, x, ptr) \
 	vhost_get_user(vq, x, ptr, VHOST_ADDR_USED)
 
-static void vhost_dev_lock_vqs(struct vhost_dev *d)
-{
-	int i = 0;
-	for (i = 0; i < d->nvqs; ++i)
-		mutex_lock_nested(&d->vqs[i]->mutex, i);
-}
-
-static void vhost_dev_unlock_vqs(struct vhost_dev *d)
-{
-	int i = 0;
-	for (i = 0; i < d->nvqs; ++i)
-		mutex_unlock(&d->vqs[i]->mutex);
-}
-
 static inline int vhost_get_avail_idx(struct vhost_virtqueue *vq,
 				      __virtio16 *idx)
 {

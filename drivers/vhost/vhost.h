@@ -336,6 +336,25 @@ static inline bool vhost_access_denied(int access, int perm)
 	return access & ~perm;
 }
 
+static inline void vhost_dev_lock_vqs(struct vhost_dev *d)
+{
+	int i = 0;
+
+	for (i = 0; i < d->nvqs; ++i)
+		mutex_lock_nested(&d->vqs[i]->mutex, i);
+}
+
+static inline void vhost_dev_unlock_vqs(struct vhost_dev *d)
+{
+	int i = 0;
+
+	for (i = 0; i < d->nvqs; ++i)
+		mutex_unlock(&d->vqs[i]->mutex);
+}
+
+int vhost_translate_desc(struct vhost_virtqueue *vq, u64 addr, u32 len,
+			 struct iovec iov[], int iov_size, int access);
+
 void vhost_dev_set_iommu(struct vhost_dev *dev,
 			 vhost_iommu_translate_t fn, void *cookie);
 
