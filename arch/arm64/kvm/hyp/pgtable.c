@@ -828,6 +828,13 @@ static int stage2_map_walker_try_leaf(const struct kvm_pgtable_visit_ctx *ctx,
 	if (!stage2_pte_needs_update(ctx->old, new))
 		return -EAGAIN;
 
+	/* If we're only changing software bits, then store them and go! */
+	if (!kvm_pgtable_walk_shared(ctx) &&
+	    !((ctx->old ^ new) & ~KVM_PTE_LEAF_ATTR_HI_SW)) {
+		smp_store_release(ctx->ptep, new);
+		goto out;
+	}
+
 	if (!stage2_try_break_pte(ctx, data->mmu))
 		return -EAGAIN;
 
@@ -840,6 +847,7 @@ static int stage2_map_walker_try_leaf(const struct kvm_pgtable_visit_ctx *ctx,
 
 	stage2_make_pte(ctx, new);
 
+out:
 	if (kvm_phys_is_valid(phys))
 		data->phys += granule;
 	return 0;
