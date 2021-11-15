@@ -1143,12 +1143,15 @@ out:
 
 u64 bpf_jit_alloc_exec_limit(void)
 {
-	return VMALLOC_END - VMALLOC_START;
+	return BPF_JIT_REGION_SIZE;
 }
 
 void *bpf_jit_alloc_exec(unsigned long size)
 {
-	return vmalloc(size);
+	return __vmalloc_node_range(size, PAGE_SIZE, BPF_JIT_REGION_START,
+				    BPF_JIT_REGION_END, GFP_KERNEL,
+				    PAGE_KERNEL, 0, NUMA_NO_NODE,
+				    __builtin_return_address(0));
 }
 
 void bpf_jit_free_exec(void *addr)
