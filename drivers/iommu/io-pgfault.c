@@ -55,12 +55,28 @@ struct iopf_group {
 static int iopf_complete_group(struct device *dev, struct iopf_fault *iopf,
 			       enum iommu_page_response_code status)
 {
+	int ret;
+	struct iommu_fault_param *fp;
 	struct iommu_page_response resp = {
 		.version		= IOMMU_PAGE_RESP_VERSION_1,
 		.pasid			= iopf->fault.prm.pasid,
 		.grpid			= iopf->fault.prm.grpid,
 		.code			= status,
 	};
+
+	if (status == IOMMU_PAGE_RESP_INVALID) {
+		ret = -ENODEV;
+
+		/* Inform the device driver of the fault, if it requested it */
+		mutex_lock(&dev->iommu->lock);
+		fp = dev->iommu->fault_param;
+		if (fp && fp->handler)
+			ret = fp->handler(&iopf->fault, fp->data);
+		mutex_unlock(&dev->iommu->lock);
+
+		if (!ret)
+			return 0;
+	}
 
 	if ((iopf->fault.prm.flags & IOMMU_FAULT_PAGE_REQUEST_PASID_VALID) &&
 	    (iopf->fault.prm.flags & IOMMU_FAULT_PAGE_RESPONSE_NEEDS_PASID))
