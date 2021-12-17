@@ -152,8 +152,8 @@ static void iopf_handle_group(struct work_struct *work)
 
 /**
  * iommu_queue_iopf - IO Page Fault handler
+ * @dev: the device causing the fault
  * @fault: fault event
- * @cookie: struct device, passed to iommu_register_device_fault_handler.
  *
  * Add a fault to the device workqueue, to be handled by mm.
  *
@@ -183,14 +183,13 @@ static void iopf_handle_group(struct work_struct *work)
  *
  * Return: 0 on success and <0 on error.
  */
-int iommu_queue_iopf(struct iommu_fault *fault, void *cookie)
+int iommu_queue_iopf(struct device *dev, struct iommu_fault *fault)
 {
 	int ret;
 	struct iopf_group *group;
 	struct iopf_fault *iopf, *next;
 	struct iopf_device_param *iopf_param;
 
-	struct device *dev = cookie;
 	struct dev_iommu *param = dev->iommu;
 
 	lockdep_assert_held(&param->lock);
@@ -203,7 +202,7 @@ int iommu_queue_iopf(struct iommu_fault *fault, void *cookie)
 	 * As long as we're holding param->lock, the queue can't be unlinked
 	 * from the device and therefore cannot disappear.
 	 */
-	iopf_param = param->iopf_param;
+	iopf_param = param->fault_param->iopf;
 	if (!iopf_param)
 		return -ENODEV;
 
@@ -273,16 +272,16 @@ EXPORT_SYMBOL_GPL(iommu_queue_iopf);
 int iopf_queue_flush_dev(struct device *dev)
 {
 	int ret = 0;
-	struct iopf_device_param *iopf_param;
+	struct iommu_fault_param *fp;
 	struct dev_iommu *param = dev->iommu;
 
 	if (!param)
 		return -ENODEV;
 
 	mutex_lock(&param->lock);
-	iopf_param = param->iopf_param;
-	if (iopf_param)
-		flush_workqueue(iopf_param->queue->wq);
+	fp = param->fault_param;
+	if (fp && fp->iopf)
+		flush_workqueue(fp->iopf->queue->wq);
 	else
 		ret = -ENODEV;
 	mutex_unlock(&param->lock);
@@ -332,6 +331,7 @@ EXPORT_SYMBOL_GPL(iopf_queue_discard_partial);
 int iopf_queue_add_device(struct iopf_queue *queue, struct device *dev)
 {
 	int ret = -EBUSY;
+	struct iommu_fault_param *fp;
 	struct iopf_device_param *iopf_param;
 	struct dev_iommu *param = dev->iommu;
 
@@ -348,9 +348,10 @@ int iopf_queue_add_device(struct iopf_queue *queue, struct device *dev)
 
 	mutex_lock(&queue->lock);
 	mutex_lock(&param->lock);
-	if (!param->iopf_param) {
+	fp = iommu_get_fault_param(dev);
+	if (fp && !fp->iopf) {
 		list_add(&iopf_param->queue_list, &queue->devices);
-		param->iopf_param = iopf_param;
+		fp->iopf = iopf_param;
 		ret = 0;
 	}
 	mutex_unlock(&param->lock);
@@ -375,6 +376,7 @@ EXPORT_SYMBOL_GPL(iopf_queue_add_device);
 int iopf_queue_remove_device(struct iopf_queue *queue, struct device *dev)
 {
 	int ret = -EINVAL;
+	struct iommu_fault_param *fp;
 	struct iopf_fault *iopf, *next;
 	struct iopf_device_param *iopf_param;
 	struct dev_iommu *param = dev->iommu;
@@ -384,10 +386,13 @@ int iopf_queue_remove_device(struct iopf_queue *queue, struct device *dev)
 
 	mutex_lock(&queue->lock);
 	mutex_lock(&param->lock);
-	iopf_param = param->iopf_param;
-	if (iopf_param && iopf_param->queue == queue) {
-		list_del(&iopf_param->queue_list);
-		param->iopf_param = NULL;
+	fp = param->fault_param;
+	if (fp && list_empty(&fp->faults) && fp->iopf &&
+	    fp->iopf->queue == queue) {
+		list_del(&fp->iopf->queue_list);
+		iopf_param = fp->iopf;
+		fp->iopf = NULL;
+		iommu_put_fault_param(dev);
 		ret = 0;
 	}
 	mutex_unlock(&param->lock);

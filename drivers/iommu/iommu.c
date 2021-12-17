@@ -28,6 +28,8 @@
 #include <linux/cc_platform.h>
 #include <trace/events/iommu.h>
 
+#include "iommu-sva-lib.h"
+
 static struct kset *iommu_group_kset;
 static DEFINE_IDA(iommu_group_ida);
 
@@ -1095,6 +1097,52 @@ int iommu_group_unregister_notifier(struct iommu_group *group,
 }
 EXPORT_SYMBOL_GPL(iommu_group_unregister_notifier);
 
+/*
+ * iommu_get_fault_param() - Get the fault param for a device
+ *
+ * Allocate if necessary and return the IOMMU fault param associated to a
+ * device. For internal use only.
+ */
+struct iommu_fault_param *iommu_get_fault_param(struct device *dev)
+{
+	struct iommu_fault_param *fp;
+
+	lockdep_assert_held(&dev->iommu->lock);
+
+	if (dev->iommu->fault_param)
+		return dev->iommu->fault_param;
+
+	get_device(dev);
+	fp = dev->iommu->fault_param = kzalloc(sizeof(*fp), GFP_KERNEL);
+	if (!fp) {
+		put_device(dev);
+		return ERR_PTR(-ENOMEM);
+	}
+	mutex_init(&fp->lock);
+	INIT_LIST_HEAD(&fp->faults);
+
+	return fp;
+}
+
+/*
+ * iommu_put_fault_param() - Put for fault param for a device
+ *
+ * Free if possible the fault param created by iommu_get_fault_param()
+ */
+void iommu_put_fault_param(struct device *dev)
+{
+	struct iommu_fault_param *fp;
+
+	lockdep_assert_held(&dev->iommu->lock);
+
+	fp = dev->iommu->fault_param;
+	if (!fp->handler && !fp->iopf) {
+		dev->iommu->fault_param = NULL;
+		kfree(fp);
+		put_device(dev);
+	}
+}
+
 /**
  * iommu_register_device_fault_handler() - Register a device fault handler
  * @dev: the device
@@ -1118,31 +1166,23 @@ int iommu_register_device_fault_handler(struct device *dev,
 					void *data)
 {
 	struct dev_iommu *param = dev->iommu;
+	struct iommu_fault_param *fp;
 	int ret = 0;
 
 	if (!param)
 		return -EINVAL;
 
 	mutex_lock(&param->lock);
-	/* Only allow one fault handler registered for each device */
-	if (param->fault_param) {
+	fp = iommu_get_fault_param(dev);
+	if (IS_ERR(fp)) {
+		ret = PTR_ERR(fp);
+	} else if (fp->handler) {
+		/* Only allow one fault handler registered for each device */
 		ret = -EBUSY;
-		goto done_unlock;
+	} else {
+		fp->handler = handler;
+		fp->data = data;
 	}
-
-	get_device(dev);
-	param->fault_param = kzalloc(sizeof(*param->fault_param), GFP_KERNEL);
-	if (!param->fault_param) {
-		put_device(dev);
-		ret = -ENOMEM;
-		goto done_unlock;
-	}
-	param->fault_param->handler = handler;
-	param->fault_param->data = data;
-	mutex_init(&param->fault_param->lock);
-	INIT_LIST_HEAD(&param->fault_param->faults);
-
-done_unlock:
 	mutex_unlock(&param->lock);
 
 	return ret;
@@ -1161,26 +1201,19 @@ EXPORT_SYMBOL_GPL(iommu_register_device_fault_handler);
 int iommu_unregister_device_fault_handler(struct device *dev)
 {
 	struct dev_iommu *param = dev->iommu;
-	int ret = 0;
+	struct iommu_fault_param *fp;
+	int ret = -EINVAL;
 
 	if (!param)
 		return -EINVAL;
 
 	mutex_lock(&param->lock);
-
-	if (!param->fault_param)
-		goto unlock;
-
-	/* we cannot unregister handler if there are pending faults */
-	if (!list_empty(&param->fault_param->faults)) {
-		ret = -EBUSY;
-		goto unlock;
+	fp = param->fault_param;
+	if (fp && fp->handler && list_empty(&fp->faults)) {
+		param->fault_param->handler = NULL;
+		iommu_put_fault_param(dev);
+		ret = 0;
 	}
-
-	kfree(param->fault_param);
-	param->fault_param = NULL;
-	put_device(dev);
-unlock:
 	mutex_unlock(&param->lock);
 
 	return ret;
@@ -1211,7 +1244,7 @@ int iommu_report_device_fault(struct device *dev, struct iommu_fault_event *evt)
 	/* we only report device fault if there is a handler registered */
 	mutex_lock(&param->lock);
 	fparam = param->fault_param;
-	if (!fparam || !fparam->handler) {
+	if (!fparam) {
 		ret = -EINVAL;
 		goto done_unlock;
 	}
@@ -1229,7 +1262,14 @@ int iommu_report_device_fault(struct device *dev, struct iommu_fault_event *evt)
 		mutex_unlock(&fparam->lock);
 	}
 
-	ret = fparam->handler(&evt->fault, fparam->data);
+	if (fparam->iopf) {
+		ret = iommu_queue_iopf(dev, &evt->fault);
+	} else if (fparam->handler) {
+		ret = fparam->handler(&evt->fault, fparam->data);
+	} else {
+		ret = -ENODEV;
+	}
+
 	if (ret && evt_pending) {
 		mutex_lock(&fparam->lock);
 		list_del(&evt_pending->list);

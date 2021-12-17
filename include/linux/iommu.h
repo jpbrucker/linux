@@ -348,19 +348,20 @@ struct iommu_fault_event {
  * @data: handler private data
  * @faults: holds the pending faults which needs response
  * @lock: protect pending faults list
+ * @iopf: I/O Page fault handler and data
  */
 struct iommu_fault_param {
 	iommu_dev_fault_handler_t handler;
 	void *data;
 	struct list_head faults;
 	struct mutex lock;
+	struct iopf_device_param *iopf;
 };
 
 /**
  * struct dev_iommu - Collection of per-device IOMMU data
  *
  * @fault_param: IOMMU detected device fault reporting data
- * @iopf_param:	 I/O Page Fault queue and data
  * @fwspec:	 IOMMU fwspec data
  * @iommu_dev:	 IOMMU device this device is linked to
  * @priv:	 IOMMU Driver private data
@@ -371,7 +372,6 @@ struct iommu_fault_param {
 struct dev_iommu {
 	struct mutex lock;
 	struct iommu_fault_param	*fault_param;
-	struct iopf_device_param	*iopf_param;
 	struct iommu_fwspec		*fwspec;
 	struct iommu_device		*iommu_dev;
 	void				*priv;
@@ -488,6 +488,8 @@ extern int iommu_group_unregister_notifier(struct iommu_group *group,
 extern int iommu_register_device_fault_handler(struct device *dev,
 					iommu_dev_fault_handler_t handler,
 					void *data);
+extern struct iommu_fault_param *iommu_get_fault_param(struct device *dev);
+extern void iommu_put_fault_param(struct device *dev);
 
 extern int iommu_unregister_device_fault_handler(struct device *dev);
 
