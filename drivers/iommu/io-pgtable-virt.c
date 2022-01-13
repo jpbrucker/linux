@@ -22,6 +22,10 @@
 
 #include "io-pgtable-virt.h"
 
+/* Only for development */
+#define IOPT_DEBUG(fmt, ...) pr_info("### %s: " fmt, __func__, ##__VA_ARGS__)
+#define IOPT_BUG_ON BUG_ON
+
 struct virt_iopt {
 	struct io_pgtable iopt;
 	void *pgd;
@@ -72,6 +76,8 @@ static viopte_t virt_iopt_install_table(struct virt_iopt *viopt, viopte_t *ptep,
 		 * We may race with another thread to install the table.
 		 * No problem.
 		 */
+		IOPT_DEBUG("race while installing table 0x%llx -> 0x%llx (OK)\n",
+			   old_pte, pte);
 		free_page((unsigned long)table);
 		return old_pte;
 	}
@@ -88,6 +94,8 @@ static void virt_iopt_free_table(struct virt_iopt *viopt, int lvl,
 {
 	int idx;
 	viopte_t pte;
+
+	IOPT_BUG_ON(lvl < 0 || lvl > VIRT_PGTABLE_LAST_LEVEL);
 
 	for (idx = 0; lvl != VIRT_PGTABLE_LAST_LEVEL &&
 	     idx < VIRT_PGTABLE_NUM_PTES; idx++) {
@@ -131,6 +139,7 @@ static int virt_iopt_install_pte(struct virt_iopt *viopt, unsigned long iova,
 	 * because unmap() doesn't free the parent table when it removes a leaf.
 	 */
 	if (old & VIRT_PGTABLE_PTE_TABLE) {
+		IOPT_DEBUG("removing old tables 0x%lx %zu (OK)\n", iova, size);
 		io_pgtable_tlb_flush_walk(&viopt->iopt, iova, size,
 					  VIRT_PGTABLE_GRANULE);
 		ptep = virt_iopt_pte_to_va(old);
@@ -149,7 +158,11 @@ static int __virt_iopt_map(struct virt_iopt *viopt, unsigned long iova,
 	unsigned int idx;
 	size_t page_size = VIRT_PGTABLE_PAGE_SIZE(lvl);
 
+	IOPT_BUG_ON(lvl < 0 || lvl > VIRT_PGTABLE_LAST_LEVEL);
+
 	idx = VIRT_PGTABLE_IDX(iova, lvl);
+	IOPT_BUG_ON(idx >= VIRT_PGTABLE_NUM_PTES);
+
 	ptep += idx;
 
 	pte = READ_ONCE(*ptep);
@@ -196,7 +209,11 @@ static size_t __virt_iopt_unmap(struct virt_iopt *viopt, unsigned long iova,
 	unsigned int idx;
 	size_t page_size = VIRT_PGTABLE_PAGE_SIZE(lvl);
 
+	IOPT_BUG_ON(lvl < 0 || lvl > VIRT_PGTABLE_LAST_LEVEL);
+
 	idx = VIRT_PGTABLE_IDX(iova, lvl);
+	IOPT_BUG_ON(idx >= VIRT_PGTABLE_NUM_PTES);
+
 	ptep += idx;
 
 	pte = READ_ONCE(*ptep);
@@ -206,13 +223,17 @@ static size_t __virt_iopt_unmap(struct virt_iopt *viopt, unsigned long iova,
 	if (page_size == size) {
 		viopte_t old_pte = xchg_relaxed(ptep, 0);
 
-		WARN_ON(pte != old_pte);
+		if (WARN_ON(pte != old_pte))
+			IOPT_DEBUG("race: pte %llx != old_pte %llx\n", pte, old_pte);
+
 		if (old_pte & VIRT_PGTABLE_PTE_TABLE) {
+			IOPT_BUG_ON(lvl == VIRT_PGTABLE_LAST_LEVEL);
 			/* Wait for walks before freeing the table */
 			ptep = virt_iopt_pte_to_va(old_pte);
 			io_pgtable_tlb_flush_walk(&viopt->iopt, iova, size,
 						  VIRT_PGTABLE_GRANULE);
 			virt_iopt_free_table(viopt, lvl, ptep);
+			IOPT_DEBUG("freed table (OK)\n");
 		} else {
 			io_pgtable_tlb_add_page(&viopt->iopt, gather, iova,
 						size);
@@ -251,6 +272,7 @@ static phys_addr_t __virt_iopt_iova_to_phys(struct virt_iopt *viopt,
 	unsigned long mask;
 
 	idx = VIRT_PGTABLE_IDX(iova, lvl);
+	IOPT_BUG_ON(idx >= VIRT_PGTABLE_NUM_PTES);
 
 	pte = READ_ONCE(ptep[idx]);
 	if (!(pte & VIRT_PGTABLE_PTE_VALID)) {
@@ -275,6 +297,16 @@ static phys_addr_t virt_iopt_iova_to_phys(struct io_pgtable_ops *ops,
 static struct io_pgtable *virt_iopt_alloc(struct io_pgtable_cfg *cfg, void *cookie)
 {
 	struct virt_iopt *viopt;
+
+	BUILD_BUG_ON(VIRT_PGTABLE_IDX_SHIFT(0) != 39);
+	BUILD_BUG_ON(VIRT_PGTABLE_IDX_SHIFT(1) != 30);
+	BUILD_BUG_ON(VIRT_PGTABLE_IDX_SHIFT(2) != 21);
+	BUILD_BUG_ON(VIRT_PGTABLE_IDX_SHIFT(3) != 12);
+	BUILD_BUG_ON(VIRT_PGTABLE_PTE_PFN_MASK(0) != 0xfff8000000000);
+	BUILD_BUG_ON(VIRT_PGTABLE_PTE_PFN_MASK(1) != 0xfffffc0000000);
+	BUILD_BUG_ON(VIRT_PGTABLE_PTE_PFN_MASK(2) != 0xfffffffe00000);
+	BUILD_BUG_ON(VIRT_PGTABLE_PTE_PFN_MASK(3) != 0xffffffffff000);
+	BUILD_BUG_ON(VIRT_PGTABLE_IDX(0x765276401000, 1) != 0x149);
 
 	if (cfg->quirks)
 		return NULL;
