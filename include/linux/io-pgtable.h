@@ -173,6 +173,8 @@ struct io_pgtable_ops {
 				    unsigned long iova);
 };
 
+#ifdef CONFIG_IOMMU_IO_PGTABLE
+
 /**
  * alloc_io_pgtable_ops() - Allocate a page table allocator for use by an IOMMU.
  *
@@ -195,6 +197,21 @@ struct io_pgtable_ops *alloc_io_pgtable_ops(enum io_pgtable_fmt fmt,
  * @ops: The ops returned from alloc_io_pgtable_ops.
  */
 void free_io_pgtable_ops(struct io_pgtable_ops *ops);
+
+#else /* !CONFIG_IOMMU_IO_PGTABLE */
+
+static inline struct io_pgtable_ops *
+alloc_io_pgtable_ops(enum io_pgtable_fmt fmt, struct io_pgtable_cfg *cfg,
+		     void *cookie)
+{
+	return NULL;
+}
+
+static inline void free_io_pgtable_ops(struct io_pgtable_ops *ops)
+{
+}
+
+#endif /* !CONFIG_IOMMU_IO_PGTABLE */
 
 
 /*
