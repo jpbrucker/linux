@@ -29,6 +29,7 @@ hyp-obj-$(CONFIG_DEBUG_LIST) += list_debug.o
 hyp-obj-y += $(lib-objs)
 
 hyp-obj-$(CONFIG_KVM_IOMMU) += iommu/iommu.o
+hyp-obj-$(CONFIG_ARM_SMMU_V3_PKVM) += iommu/arm-smmu-v3.o
 
 ##
 ## Build rules for compiling nVHE hyp code
