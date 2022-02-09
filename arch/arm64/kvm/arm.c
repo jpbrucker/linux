@@ -44,6 +44,7 @@
 #include <kvm/arm_hypercalls.h>
 #include <kvm/arm_pmu.h>
 #include <kvm/arm_psci.h>
+#include <kvm/arm_smmu_v3.h>
 
 static enum kvm_mode kvm_mode = KVM_MODE_DEFAULT;
 DEFINE_STATIC_KEY_FALSE(kvm_protected_mode_initialized);
@@ -1901,11 +1902,26 @@ static bool init_psci_relay(void)
 
 static int init_stage2_iommu(void)
 {
-	return KVM_IOMMU_DRIVER_NONE;
+	int ret;
+	unsigned int smmu_count;
+
+	ret = kvm_arm_smmu_v3_init(&smmu_count);
+	if (ret)
+		return ret;
+	else if (!smmu_count)
+		return KVM_IOMMU_DRIVER_NONE;
+	return KVM_IOMMU_DRIVER_SMMUV3;
 }
 
 static void remove_stage2_iommu(enum kvm_iommu_driver iommu)
 {
+	switch (iommu) {
+	case KVM_IOMMU_DRIVER_SMMUV3:
+		kvm_arm_smmu_v3_remove();
+		break;
+	default:
+		break;
+	}
 }
 
 static int init_subsystems(void)
