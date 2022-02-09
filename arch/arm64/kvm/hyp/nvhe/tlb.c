@@ -5,7 +5,6 @@
  */
 
 #include <asm/kvm_hyp.h>
-#include <asm/kvm_mmu.h>
 #include <asm/tlbflush.h>
 
 #include <nvhe/mem_protect.h>
