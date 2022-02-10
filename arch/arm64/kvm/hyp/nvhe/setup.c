@@ -10,6 +10,8 @@
 #include <asm/kvm_pgtable.h>
 #include <asm/kvm_pkvm.h>
 
+#include <kvm/pl011.h>
+
 #include <nvhe/alloc.h>
 #include <nvhe/early_alloc.h>
 #include <nvhe/ffa.h>
@@ -393,6 +395,10 @@ void __noreturn __pkvm_init_finalise(void)
 	if (ret)
 		goto out;
 
+	ret = pkvm_pl011_init();
+	if (ret)
+		goto out;
+
 	if (kvm_iommu_ops.init) {
 		ret = kvm_iommu_ops.init();
 		if (ret)
@@ -424,6 +430,9 @@ void __noreturn __pkvm_init_finalise(void)
 		goto out;
 
 	pkvm_hyp_vm_table_init(vm_table_base);
+
+	pkvm_debug("finalized\n");
+
 out:
 	/*
 	 * We tail-called to here from handle___pkvm_init() and will not return,
