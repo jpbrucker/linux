@@ -2343,6 +2343,13 @@ static __init int kvm_arm_init(void)
 		return err;
 	}
 
+	/*
+	 * If pKVM is enabled, we're about to install the vectors for this CPU
+	 * only. Ensure we keep executing on it until hyp_install_host_vector()
+	 * has run everywhere.
+	 */
+	migrate_disable();
+
 	if (!in_hyp_mode) {
 		err = init_hyp_mode();
 		if (err)
@@ -2366,6 +2373,8 @@ static __init int kvm_arm_init(void)
 			goto out_subs;
 		}
 	}
+
+	migrate_enable();
 
 	if (is_protected_kvm_enabled()) {
 		kvm_info("Protected nVHE mode initialized successfully\n");
@@ -2391,6 +2400,7 @@ out_hyp:
 	if (!in_hyp_mode)
 		teardown_hyp_mode();
 out_err:
+	migrate_enable();
 	kvm_arm_vmid_alloc_free();
 	return err;
 }
