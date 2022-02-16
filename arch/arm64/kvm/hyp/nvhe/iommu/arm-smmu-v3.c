@@ -7,6 +7,7 @@
 #include <asm/arm-smmu-v3-regs.h>
 #include <asm/kvm_hyp.h>
 #include <kvm/arm_smmu_v3.h>
+#include <kvm/pl011.h>
 #include <nvhe/iommu.h>
 #include <nvhe/mm.h>
 #include <nvhe/pkvm.h>
@@ -297,6 +298,9 @@ static int smmu_init_cmdq(struct hyp_arm_smmu_v3_device *smmu)
 	writel_relaxed(0, smmu->base + ARM_SMMU_CMDQ_PROD);
 	writel_relaxed(0, smmu->base + ARM_SMMU_CMDQ_CONS);
 
+	pkvm_debug("CMDQ @0x%llx 0x%llx sz=0x%lx\n", cmdq_base,
+		   (u64)smmu->cmdq_base, cmdq_size);
+
 	return 0;
 }
 
@@ -349,6 +353,18 @@ static int smmu_init_strtab(struct hyp_arm_smmu_v3_device *smmu)
 
 	/* Disable all STEs */
 	memset(smmu->strtab_base, 0, strtab_size);
+
+	switch (fmt) {
+	case STRTAB_BASE_CFG_FMT_LINEAR:
+		pkvm_debug("STRTAB @0x%llx 0x%llx sz=0x%lx\n",
+			   strtab_base, (u64)smmu->strtab_base, strtab_size);
+		break;
+	case STRTAB_BASE_CFG_FMT_2LVL:
+                pkvm_debug("STRTAB @0x%llx 0x%llx sz=0x%lx split=%x\n",
+                           strtab_base, (u64)smmu->strtab_base, strtab_size,
+                           smmu->strtab_split);
+		break;
+	}
 	return 0;
 }
 
@@ -473,6 +489,9 @@ static int smmu_init_device(struct hyp_arm_smmu_v3_device *smmu)
 		return ret;
 
 	smmu->iommu.pgtable = &smmu->pgtable.iop;
+
+	pkvm_debug("MMIO @0x%llx-0x%llx\n", smmu->mmio_addr,
+		   smmu->mmio_addr + smmu->mmio_size - 1);
 
 	ret = smmu_init_registers(smmu);
 	if (ret)
