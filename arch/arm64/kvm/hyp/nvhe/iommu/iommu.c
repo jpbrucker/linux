@@ -7,6 +7,7 @@
 
 #include <asm/kvm_hyp.h>
 #include <kvm/iommu.h>
+#include <kvm/pl011.h>
 #include <nvhe/iommu.h>
 #include <nvhe/mem_protect.h>
 #include <nvhe/mm.h>
@@ -331,6 +332,8 @@ static int iommu_power_on(struct kvm_power_domain *pd)
 	struct kvm_hyp_iommu *iommu = container_of(pd, struct kvm_hyp_iommu,
 						   power_domain);
 
+	pkvm_debug("%s\n", __func__);
+
 	/*
 	 * We currently assume that the device retains its architectural state
 	 * across power off, hence no save/restore.
@@ -345,6 +348,8 @@ static int iommu_power_off(struct kvm_power_domain *pd)
 {
 	struct kvm_hyp_iommu *iommu = container_of(pd, struct kvm_hyp_iommu,
 						   power_domain);
+
+	pkvm_debug("%s\n", __func__);
 
 	hyp_spin_lock(&iommu_lock);
 	iommu->power_is_off = true;
