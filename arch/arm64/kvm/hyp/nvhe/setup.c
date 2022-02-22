@@ -190,6 +190,51 @@ static void hpool_put_page(void *addr)
 	hyp_put_page(&hpool, addr);
 }
 
+struct mapping_dump {
+	u64			start;
+	u64			end;
+	enum pkvm_page_state	state;
+};
+
+static const char *state_to_str(enum pkvm_page_state state)
+{
+	switch (state) {
+	case PKVM_PAGE_OWNED:		return "hyp";
+	case PKVM_PAGE_SHARED_OWNED:	return "hyp-host";
+	case PKVM_PAGE_SHARED_BORROWED:	return "host-hyp";
+	case PKVM_NOPAGE:		return "host";
+	default:			return "???";
+	}
+}
+
+/* Print ranges of mappings */
+static void pkvm_dump_mapping(struct mapping_dump *dump, u64 start, u64 size,
+			      enum pkvm_page_state state)
+{
+	u64 end = start + size - 1;
+
+	if (!dump->start) {
+		dump->start = start;
+		dump->end = end;
+		dump->state = state;
+		return;
+	}
+
+	/* merge contiguous range */
+	if (dump->end + 1 == start &&
+	    dump->state == state) {
+		dump->end = end;
+		return;
+	}
+
+	pkvm_debug("* 0x%llx - 0x%llx (0x%llx) %s\n", dump->start, dump->end,
+		   dump->end - dump->start + 1, state_to_str(dump->state));
+
+	dump->start = start;
+	dump->end = end;
+	dump->state = state;
+}
+
 static int fix_host_ownership_walker(const struct kvm_pgtable_visit_ctx *ctx,
 				     enum kvm_pgtable_walk_flags visit)
 {
@@ -212,6 +257,7 @@ static int fix_host_ownership_walker(const struct kvm_pgtable_visit_ctx *ctx,
 	 * configured in the hypervisor stage-1.
 	 */
 	state = pkvm_getstate(kvm_pgtable_hyp_pte_prot(ctx->old));
+	pkvm_dump_mapping(ctx->arg, phys, PAGE_SIZE, state);
 	switch (state) {
 	case PKVM_PAGE_OWNED:
 		return host_stage2_set_owner_locked(phys, PAGE_SIZE, PKVM_ID_HYP);
@@ -244,9 +290,11 @@ static int fix_hyp_pgtable_refcnt_walker(const struct kvm_pgtable_visit_ctx *ctx
 
 static int fix_host_ownership(void)
 {
+	struct mapping_dump dump = { .state = PKVM_NOPAGE };
 	struct kvm_pgtable_walker walker = {
 		.cb	= fix_host_ownership_walker,
 		.flags	= KVM_PGTABLE_WALK_LEAF,
+		.arg	= &dump,
 	};
 	int i, ret;
 
@@ -254,7 +302,10 @@ static int fix_host_ownership(void)
 		struct memblock_region *reg = &hyp_memory[i];
 		u64 start = (u64)hyp_phys_to_virt(reg->base);
 
+		pkvm_debug("Memory: 0x%llx - 0x%llx\n", reg->base,
+			   reg->base + reg->size - 1);
 		ret = kvm_pgtable_walk(&pkvm_pgtable, start, reg->size, &walker);
+		pkvm_dump_mapping(&dump, 0, 0, __PKVM_PAGE_RESERVED);
 		if (ret)
 			return ret;
 	}
@@ -275,6 +326,47 @@ int pkvm_create_hyp_device_mapping(u64 base, u64 size, void __iomem *haddr)
 	ret = host_stage2_set_owner_locked(base, size, PKVM_ID_HYP);
 	if (ret)
 		return ret;
+
+	return ret;
+}
+
+static int pkvm_dump_pte(const struct kvm_pgtable_visit_ctx *ctx,
+			 enum kvm_pgtable_walk_flags visit)
+{
+	enum pkvm_page_state state;
+	size_t size = kvm_granule_size(ctx->level);
+
+	if (!kvm_pte_valid(ctx->old)) {
+		pkvm_dump_mapping(ctx->arg, __hyp_pa(ctx->addr), size, PKVM_NOPAGE);
+		return 0;
+	}
+
+	state = pkvm_getstate(kvm_pgtable_hyp_pte_prot(ctx->old));
+	pkvm_dump_mapping(ctx->arg, kvm_pte_to_phys(ctx->old), size, state);
+	return 0;
+}
+
+int pkvm_dump_mem(void)
+{
+	struct mapping_dump dump = { .state = PKVM_NOPAGE };
+	struct kvm_pgtable_walker walker = {
+		.cb	= pkvm_dump_pte,
+		.flags	= KVM_PGTABLE_WALK_LEAF,
+		.arg	= &dump,
+	};
+	int i, ret;
+
+	hyp_spin_lock(&pkvm_pgd_lock);
+	for (i = 0; i < hyp_memblock_nr; i++) {
+		struct memblock_region *reg = &hyp_memory[i];
+		u64 start = (u64)hyp_phys_to_virt(reg->base);
+
+		ret = kvm_pgtable_walk(&pkvm_pgtable, start, reg->size, &walker);
+		pkvm_dump_mapping(&dump, 0, 0, __PKVM_PAGE_RESERVED);
+		if (ret)
+			break;
+	}
+	hyp_spin_unlock(&pkvm_pgd_lock);
 
 	return ret;
 }
