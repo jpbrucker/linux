@@ -241,6 +241,8 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 	kvm_unshare_hyp(kvm, kvm + 1);
 
 	kvm_arm_teardown_hypercalls(kvm);
+
+	kvm_call_hyp_nvhe(__pkvm_dump_mem);
 }
 
 static int kvm_check_extension(struct kvm *kvm, long ext)
