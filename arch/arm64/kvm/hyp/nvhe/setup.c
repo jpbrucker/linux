@@ -259,6 +259,23 @@ static int fix_host_ownership(void)
 	return 0;
 }
 
+/* Map the MMIO region into the hypervisor and remove it from host */
+int pkvm_create_hyp_device_mapping(u64 base, u64 size, void __iomem *haddr)
+{
+	int ret;
+
+	ret = __pkvm_create_private_mapping(base, size, PAGE_HYP_DEVICE, haddr);
+	if (ret)
+		return ret;
+
+	/* lock not needed during setup */
+	ret = host_stage2_set_owner_locked(base, size, PKVM_ID_HYP);
+	if (ret)
+		return ret;
+
+	return ret;
+}
+
 static int fix_hyp_pgtable_refcnt(void)
 {
 	struct kvm_pgtable_walker walker = {
