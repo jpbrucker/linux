@@ -27,5 +27,6 @@ int __pkvm_create_private_mapping(phys_addr_t phys, size_t size,
 				  enum kvm_pgtable_prot prot,
 				  unsigned long *haddr);
 int pkvm_alloc_private_va_range(size_t size, unsigned long *haddr);
+int pkvm_create_hyp_device_mapping(u64 base, u64 size, void __iomem *haddr);
 
 #endif /* __KVM_HYP_MM_H */
