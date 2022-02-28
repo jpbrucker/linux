@@ -32,5 +32,6 @@ phys_addr_t __pkvm_private_range_pa(void *va);
 int __pkvm_create_mappings(unsigned long start, unsigned long size,
 			   unsigned long phys, enum kvm_pgtable_prot prot);
 int __pkvm_remove_mappings(unsigned long start, unsigned long size);
+int pkvm_create_hyp_device_mapping(u64 base, u64 size, void __iomem *haddr);
 
 #endif /* __KVM_HYP_MM_H */
