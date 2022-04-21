@@ -186,6 +186,20 @@ static void arm_smmu_free_shared_cd(struct arm_smmu_ctx_desc *cd)
 	}
 }
 
+static void arm_smmu_mm_change_pte(struct mmu_notifier *mn,
+				   struct mm_struct *mm, unsigned long address,
+				   pte_t pte)
+{
+	struct arm_smmu_mmu_notifier *smmu_mn = mn_to_smmu(mn);
+	struct arm_smmu_domain *smmu_domain = smmu_mn->domain;
+
+	if (!(smmu_domain->smmu->features & ARM_SMMU_FEAT_BTM))
+		arm_smmu_tlb_inv_range_asid(address, PAGE_SIZE,
+					    smmu_mn->cd->asid, PAGE_SIZE, true,
+					    smmu_domain);
+	arm_smmu_atc_inv_domain(smmu_domain, mm->pasid, address, PAGE_SIZE);
+}
+
 static void arm_smmu_mm_invalidate_range(struct mmu_notifier *mn,
 					 struct mm_struct *mm,
 					 unsigned long start, unsigned long end)
@@ -237,6 +251,7 @@ static void arm_smmu_mmu_notifier_free(struct mmu_notifier *mn)
 }
 
 static const struct mmu_notifier_ops arm_smmu_mmu_notifier_ops = {
+	.change_pte		= arm_smmu_mm_change_pte,
 	.invalidate_range	= arm_smmu_mm_invalidate_range,
 	.release		= arm_smmu_mm_release,
 	.free_notifier		= arm_smmu_mmu_notifier_free,
