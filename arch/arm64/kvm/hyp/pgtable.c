@@ -810,18 +810,25 @@ static void stage2_make_pte(const struct kvm_pgtable_visit_ctx *ctx, kvm_pte_t n
 	smp_store_release(ctx->ptep, new);
 }
 
-static void stage2_put_pte(const struct kvm_pgtable_visit_ctx *ctx, struct kvm_s2_mmu *mmu,
+static void stage2_clear_pte(const struct kvm_pgtable_visit_ctx *ctx,
+			     struct kvm_s2_mmu *mmu)
+{
+	if (!kvm_pte_valid(ctx->old))
+		return;
+
+	kvm_clear_pte(ctx->ptep);
+	kvm_call_hyp(__kvm_tlb_flush_vmid_ipa, mmu, ctx->addr, ctx->level);
+}
+
+static void stage2_put_pte(const struct kvm_pgtable_visit_ctx *ctx,
+			   struct kvm_s2_mmu *mmu,
 			   struct kvm_pgtable_mm_ops *mm_ops)
 {
 	/*
 	 * Clear the existing PTE, and perform break-before-make with
 	 * TLB maintenance if it was valid.
 	 */
-	if (kvm_pte_valid(ctx->old)) {
-		kvm_clear_pte(ctx->ptep);
-		kvm_call_hyp(__kvm_tlb_flush_vmid_ipa, mmu, ctx->addr, ctx->level);
-	}
-
+	stage2_clear_pte(ctx, mmu);
 	mm_ops->put_page(ctx->ptep);
 }
 
