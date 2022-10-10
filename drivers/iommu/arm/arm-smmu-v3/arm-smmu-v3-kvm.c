@@ -8,6 +8,7 @@
 #include <linux/local_lock.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
+#include <linux/pm_runtime.h>
 
 #include <kvm/arm_smmu_v3.h>
 
@@ -18,6 +19,7 @@ struct host_arm_smmu_device {
 	pkvm_handle_t			id;
 	u32				boot_gbpa;
 	unsigned int			pgd_order;
+	atomic_t			initialized;
 };
 
 #define smmu_to_host(_smmu) \
@@ -134,8 +136,10 @@ static struct iommu_ops kvm_arm_smmu_ops;
 
 static struct iommu_device *kvm_arm_smmu_probe_device(struct device *dev)
 {
+	int ret;
 	struct arm_smmu_device *smmu;
 	struct kvm_arm_smmu_master *master;
+	struct host_arm_smmu_device *host_smmu;
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 
 	if (!fwspec || fwspec->ops != &kvm_arm_smmu_ops)
@@ -156,7 +160,28 @@ static struct iommu_device *kvm_arm_smmu_probe_device(struct device *dev)
 	master->smmu = smmu;
 	dev_iommu_priv_set(dev, master);
 
+	if (!device_link_add(dev, smmu->dev,
+			     DL_FLAG_PM_RUNTIME | DL_FLAG_RPM_ACTIVE |
+			     DL_FLAG_AUTOREMOVE_SUPPLIER)) {
+		ret = -ENOLINK;
+		goto err_free;
+	}
+
+	/*
+	 * If the SMMU has just been initialized by the hypervisor, release the
+	 * extra PM reference taken by kvm_arm_smmu_probe().  Not sure yet how
+	 * to improve this. Maybe have KVM call us back when it finished
+	 * initializing?
+	 */
+	host_smmu = smmu_to_host(smmu);
+	if (atomic_add_unless(&host_smmu->initialized, 1, 1))
+		pm_runtime_put_noidle(smmu->dev);
+
 	return &smmu->iommu;
+
+err_free:
+	kfree(master);
+	return ERR_PTR(ret);
 }
 
 static void kvm_arm_smmu_release_device(struct device *dev)
@@ -685,6 +710,30 @@ static int kvm_arm_smmu_probe(struct platform_device *pdev)
 
 	kvm_arm_smmu_cur++;
 
+	/*
+	 * The state of endpoints dictates when the SMMU is powered off. To turn
+	 * the SMMU on and off, a genpd driver uses SCMI over the SMC transport,
+	 * or some other platform-specific SMC. Those power requests are caught
+	 * by the hypervisor, so that the hyp driver doesn't touch the hardware
+	 * state while it is off.
+	 *
+	 * We are making a big assumption here, that TLBs and caches are invalid
+	 * on power on, and therefore we don't need to wake the SMMU when
+	 * modifying page tables, stream tables and context tables. If this
+	 * assumption does not hold on some systems, then we'll need to grab RPM
+	 * reference in map(), attach(), etc, so the hyp driver can send
+	 * invalidations.
+	 */
+	hyp_smmu->caches_clean_on_power_on = true;
+
+	pm_runtime_set_active(dev);
+	pm_runtime_enable(dev);
+	/*
+	 * Take a reference to keep the SMMU powered on while the hypervisor
+	 * initializes it.
+	 */
+	pm_runtime_resume_and_get(dev);
+
 	return 0;
 }
 
@@ -697,6 +746,11 @@ static int kvm_arm_smmu_remove(struct platform_device *pdev)
 	 * There was an error during hypervisor setup. The hyp driver may
 	 * have already enabled the device, so disable it.
 	 */
+
+	if (!atomic_read(&host_smmu->initialized))
+		pm_runtime_put_noidle(&pdev->dev);
+	pm_runtime_disable(&pdev->dev);
+	pm_runtime_set_suspended(&pdev->dev);
 	arm_smmu_unregister_iommu(smmu);
 	arm_smmu_device_disable(smmu);
 	arm_smmu_update_gbpa(smmu, host_smmu->boot_gbpa, GBPA_ABORT);
