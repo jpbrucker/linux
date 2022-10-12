@@ -326,9 +326,45 @@ phys_addr_t kvm_iommu_iova_to_phys(pkvm_handle_t iommu_id,
 	return phys;
 }
 
+static int iommu_power_on(struct kvm_power_domain *pd)
+{
+	struct kvm_hyp_iommu *iommu = container_of(pd, struct kvm_hyp_iommu,
+						   power_domain);
+
+	/*
+	 * We currently assume that the device retains its architectural state
+	 * across power off, hence no save/restore.
+	 */
+	hyp_spin_lock(&iommu_lock);
+	iommu->power_is_off = false;
+	hyp_spin_unlock(&iommu_lock);
+	return 0;
+}
+
+static int iommu_power_off(struct kvm_power_domain *pd)
+{
+	struct kvm_hyp_iommu *iommu = container_of(pd, struct kvm_hyp_iommu,
+						   power_domain);
+
+	hyp_spin_lock(&iommu_lock);
+	iommu->power_is_off = true;
+	hyp_spin_unlock(&iommu_lock);
+	return 0;
+}
+
+static const struct kvm_power_domain_ops iommu_power_ops = {
+	.power_on	= iommu_power_on,
+	.power_off	= iommu_power_off,
+};
+
 int kvm_iommu_init_device(struct kvm_hyp_iommu *iommu)
 {
+	int ret;
 	void *domains;
+
+	ret = pkvm_init_power_domain(&iommu->power_domain, &iommu_power_ops);
+	if (ret)
+		return ret;
 
 	domains = iommu->domains;
 	iommu->domains = kern_hyp_va(domains);
