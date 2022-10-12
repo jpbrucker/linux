@@ -3,6 +3,7 @@
 #define __KVM_IOMMU_H
 
 #include <asm/kvm_host.h>
+#include <kvm/power_domain.h>
 #include <linux/io-pgtable.h>
 #ifdef __KVM_NVHE_HYPERVISOR__
 #include <nvhe/spinlock.h>
@@ -15,6 +16,7 @@
  * @pgtable_cfg:	page table configuration
  * @domains:		root domain table
  * @nr_domains:		max number of domains (exclusive)
+ * @power_domain:	power domain information
  *
  * Other members are filled and used at runtime by the IOMMU driver.
  */
@@ -22,6 +24,7 @@ struct kvm_hyp_iommu {
 	struct io_pgtable_cfg		pgtable_cfg;
 	void				**domains;
 	size_t				nr_domains;
+	struct kvm_power_domain		power_domain;
 
 	struct io_pgtable_params	*pgtable;
 #ifdef __KVM_NVHE_HYPERVISOR__
@@ -29,6 +32,7 @@ struct kvm_hyp_iommu {
 #else
 	u8 unused[HYP_SPINLOCK_SIZE];
 #endif
+	bool				power_is_off;
 };
 
 struct kvm_hyp_iommu_memcache {
