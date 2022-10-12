@@ -32,6 +32,7 @@ hyp-obj-$(CONFIG_KVM_IOMMU) += iommu/iommu.o
 hyp-obj-$(CONFIG_ARM_SMMU_V3_PKVM) += iommu/arm-smmu-v3.o
 hyp-obj-$(CONFIG_ARM_SMMU_V3_PKVM) += iommu/io-pgtable-arm.o \
 	../../../../../drivers/iommu/io-pgtable-arm-common.o
+hyp-obj-y += power/scmi.o
 
 ##
 ## Build rules for compiling nVHE hyp code
