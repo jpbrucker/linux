@@ -758,6 +758,7 @@ int hyp_trace_init_tracefs(void)
 	struct dentry *root, *per_cpu_root;
 	char per_cpu_name[16];
 	long cpu;
+	int err;
 
 	if (!is_protected_kvm_enabled())
 		return 0;
@@ -803,6 +804,11 @@ int hyp_trace_init_tracefs(void)
 	}
 
 	hyp_trace_init_event_tracefs(root);
+	if (hyp_trace_init_event_early()) {
+		err = hyp_tracing_start();
+		if (err)
+			pr_warn("Failed to start early events tracing: %d\n", err);
+	}
 
 	return 0;
 }
