@@ -49,6 +49,7 @@ struct iommu_flush_ops {
 /**
  * struct io_pgtable_cfg - Configuration data for a set of page tables.
  *
+ * @fmt	           Format used for these page tables
  * @quirks:        A bitmap of hardware quirks that require some special
  *                 action by the low-level page table allocator.
  * @pgsize_bitmap: A bitmap of page sizes supported by this set of page
@@ -62,6 +63,7 @@ struct iommu_flush_ops {
  *                 page table walker.
  */
 struct io_pgtable_cfg {
+	enum io_pgtable_fmt		fmt;
 	/*
 	 * IO_PGTABLE_QUIRK_ARM_NS: (ARM formats) Set NS and NSTABLE bits in
 	 *	stage 1 PTEs, for hardware which insists on validating them
@@ -171,15 +173,13 @@ struct io_pgtable_ops {
 /**
  * alloc_io_pgtable_ops() - Allocate a page table allocator for use by an IOMMU.
  *
- * @fmt:    The page table format.
  * @cfg:    The page table configuration. This will be modified to represent
  *          the configuration actually provided by the allocator (e.g. the
  *          pgsize_bitmap may be restricted).
  * @cookie: An opaque token provided by the IOMMU driver and passed back to
  *          the callback routines in cfg->tlb.
  */
-struct io_pgtable_ops *alloc_io_pgtable_ops(enum io_pgtable_fmt fmt,
-					    struct io_pgtable_cfg *cfg,
+struct io_pgtable_ops *alloc_io_pgtable_ops(struct io_pgtable_cfg *cfg,
 					    void *cookie);
 
 /**
@@ -199,14 +199,12 @@ void free_io_pgtable_ops(struct io_pgtable_ops *ops);
 /**
  * struct io_pgtable - Internal structure describing a set of page tables.
  *
- * @fmt:    The page table format.
  * @cookie: An opaque token provided by the IOMMU driver and passed back to
  *          any callback routines.
  * @cfg:    A copy of the page table configuration.
  * @ops:    The page table operations in use for this set of page tables.
  */
 struct io_pgtable {
-	enum io_pgtable_fmt	fmt;
 	void			*cookie;
 	struct io_pgtable_cfg	cfg;
 	struct io_pgtable_ops	ops;

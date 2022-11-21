@@ -34,17 +34,16 @@ io_pgtable_init_table[IO_PGTABLE_NUM_FMTS] = {
 #endif
 };
 
-struct io_pgtable_ops *alloc_io_pgtable_ops(enum io_pgtable_fmt fmt,
-					    struct io_pgtable_cfg *cfg,
+struct io_pgtable_ops *alloc_io_pgtable_ops(struct io_pgtable_cfg *cfg,
 					    void *cookie)
 {
 	struct io_pgtable *iop;
 	const struct io_pgtable_init_fns *fns;
 
-	if (fmt >= IO_PGTABLE_NUM_FMTS)
+	if (cfg->fmt >= IO_PGTABLE_NUM_FMTS)
 		return NULL;
 
-	fns = io_pgtable_init_table[fmt];
+	fns = io_pgtable_init_table[cfg->fmt];
 	if (!fns)
 		return NULL;
 
@@ -52,7 +51,6 @@ struct io_pgtable_ops *alloc_io_pgtable_ops(enum io_pgtable_fmt fmt,
 	if (!iop)
 		return NULL;
 
-	iop->fmt	= fmt;
 	iop->cookie	= cookie;
 	iop->cfg	= *cfg;
 
@@ -73,6 +71,6 @@ void free_io_pgtable_ops(struct io_pgtable_ops *ops)
 
 	iop = io_pgtable_ops_to_pgtable(ops);
 	io_pgtable_tlb_flush_all(iop);
-	io_pgtable_init_table[iop->fmt]->free(iop);
+	io_pgtable_init_table[iop->cfg.fmt]->free(iop);
 }
 EXPORT_SYMBOL_GPL(free_io_pgtable_ops);

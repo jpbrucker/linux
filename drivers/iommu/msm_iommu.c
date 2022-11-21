@@ -342,6 +342,7 @@ static int msm_iommu_domain_config(struct msm_priv *priv)
 	spin_lock_init(&priv->pgtlock);
 
 	priv->cfg = (struct io_pgtable_cfg) {
+		.fmt = ARM_V7S,
 		.pgsize_bitmap = msm_iommu_ops.pgsize_bitmap,
 		.ias = 32,
 		.oas = 32,
@@ -349,7 +350,7 @@ static int msm_iommu_domain_config(struct msm_priv *priv)
 		.iommu_dev = priv->dev,
 	};
 
-	priv->iop = alloc_io_pgtable_ops(ARM_V7S, &priv->cfg, priv);
+	priv->iop = alloc_io_pgtable_ops(&priv->cfg, priv);
 	if (!priv->iop) {
 		dev_err(priv->dev, "Failed to allocate pgtable\n");
 		return -EINVAL;
