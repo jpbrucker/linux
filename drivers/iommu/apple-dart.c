@@ -590,6 +590,7 @@ static int apple_dart_finalize_domain(struct iommu_domain *domain,
 	}
 
 	pgtbl_cfg = (struct io_pgtable_cfg){
+		.fmt = dart->hw->fmt,
 		.pgsize_bitmap = dart->pgsize,
 		.ias = dart->ias,
 		.oas = dart->oas,
@@ -597,8 +598,7 @@ static int apple_dart_finalize_domain(struct iommu_domain *domain,
 		.iommu_dev = dart->dev,
 	};
 
-	dart_domain->pgtbl_ops =
-		alloc_io_pgtable_ops(dart->hw->fmt, &pgtbl_cfg, domain);
+	dart_domain->pgtbl_ops = alloc_io_pgtable_ops(&pgtbl_cfg, domain);
 	if (!dart_domain->pgtbl_ops) {
 		ret = -ENOMEM;
 		goto done;
