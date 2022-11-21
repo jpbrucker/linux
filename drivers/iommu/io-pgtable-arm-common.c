@@ -62,7 +62,7 @@ static void __arm_lpae_init_pte(struct arm_lpae_io_pgtable *data,
 	size_t sz = ARM_LPAE_BLOCK_SIZE(lvl, data);
 	int i;
 
-	if (data->iop.fmt != ARM_MALI_LPAE && lvl == ARM_LPAE_MAX_LEVELS - 1)
+	if (data->iop.cfg.fmt != ARM_MALI_LPAE && lvl == ARM_LPAE_MAX_LEVELS - 1)
 		pte |= ARM_LPAE_PTE_TYPE_PAGE;
 	else
 		pte |= ARM_LPAE_PTE_TYPE_BLOCK;
@@ -82,7 +82,7 @@ static int arm_lpae_init_pte(struct arm_lpae_io_pgtable *data,
 	int i;
 
 	for (i = 0; i < num_entries; i++)
-		if (iopte_leaf(ptep[i], lvl, data->iop.fmt)) {
+		if (iopte_leaf(ptep[i], lvl, data->iop.cfg.fmt)) {
 			/* We require an unmap first */
 			WARN_ON(!selftest_running);
 			return -EEXIST;
@@ -183,7 +183,7 @@ int __arm_lpae_map(struct arm_lpae_io_pgtable *data, unsigned long iova,
 		__arm_lpae_sync_pte(ptep, 1, cfg);
 	}
 
-	if (pte && !iopte_leaf(pte, lvl, data->iop.fmt)) {
+	if (pte && !iopte_leaf(pte, lvl, data->iop.cfg.fmt)) {
 		cptep = iopte_deref(pte, data);
 	} else if (pte) {
 		/* We require an unmap first */
@@ -201,8 +201,8 @@ static arm_lpae_iopte arm_lpae_prot_to_pte(struct arm_lpae_io_pgtable *data,
 {
 	arm_lpae_iopte pte;
 
-	if (data->iop.fmt == ARM_64_LPAE_S1 ||
-	    data->iop.fmt == ARM_32_LPAE_S1) {
+	if (data->iop.cfg.fmt == ARM_64_LPAE_S1 ||
+	    data->iop.cfg.fmt == ARM_32_LPAE_S1) {
 		pte = ARM_LPAE_PTE_nG;
 		if (!(prot & IOMMU_WRITE) && (prot & IOMMU_READ))
 			pte |= ARM_LPAE_PTE_AP_RDONLY;
@@ -220,8 +220,8 @@ static arm_lpae_iopte arm_lpae_prot_to_pte(struct arm_lpae_io_pgtable *data,
 	 * Note that this logic is structured to accommodate Mali LPAE
 	 * having stage-1-like attributes but stage-2-like permissions.
 	 */
-	if (data->iop.fmt == ARM_64_LPAE_S2 ||
-	    data->iop.fmt == ARM_32_LPAE_S2) {
+	if (data->iop.cfg.fmt == ARM_64_LPAE_S2 ||
+	    data->iop.cfg.fmt == ARM_32_LPAE_S2) {
 		if (prot & IOMMU_MMIO)
 			pte |= ARM_LPAE_PTE_MEMATTR_DEV;
 		else if (prot & IOMMU_CACHE)
@@ -243,7 +243,7 @@ static arm_lpae_iopte arm_lpae_prot_to_pte(struct arm_lpae_io_pgtable *data,
 	 * "outside the GPU" (i.e. either the Inner or System domain in CPU
 	 * terms, depending on coherency).
 	 */
-	if (prot & IOMMU_CACHE && data->iop.fmt != ARM_MALI_LPAE)
+	if (prot & IOMMU_CACHE && data->iop.cfg.fmt != ARM_MALI_LPAE)
 		pte |= ARM_LPAE_PTE_SH_IS;
 	else
 		pte |= ARM_LPAE_PTE_SH_OS;
@@ -254,7 +254,7 @@ static arm_lpae_iopte arm_lpae_prot_to_pte(struct arm_lpae_io_pgtable *data,
 	if (data->iop.cfg.quirks & IO_PGTABLE_QUIRK_ARM_NS)
 		pte |= ARM_LPAE_PTE_NS;
 
-	if (data->iop.fmt != ARM_MALI_LPAE)
+	if (data->iop.cfg.fmt != ARM_MALI_LPAE)
 		pte |= ARM_LPAE_PTE_AF;
 
 	return pte;
@@ -317,7 +317,7 @@ void __arm_lpae_free_pgtable(struct arm_lpae_io_pgtable *data, int lvl,
 	while (ptep != end) {
 		arm_lpae_iopte pte = *ptep++;
 
-		if (!pte || iopte_leaf(pte, lvl, data->iop.fmt))
+		if (!pte || iopte_leaf(pte, lvl, data->iop.cfg.fmt))
 			continue;
 
 		__arm_lpae_free_pgtable(data, lvl + 1, iopte_deref(pte, data));
@@ -417,7 +417,7 @@ static size_t __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
 
 			__arm_lpae_clear_pte(ptep, &iop->cfg);
 
-			if (!iopte_leaf(pte, lvl, iop->fmt)) {
+			if (!iopte_leaf(pte, lvl, iop->cfg.fmt)) {
 				/* Also flush any partial walks */
 				io_pgtable_tlb_flush_walk(iop, iova + i * size, size,
 							  ARM_LPAE_GRANULE(data));
@@ -431,7 +431,7 @@ static size_t __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
 		}
 
 		return i * size;
-	} else if (iopte_leaf(pte, lvl, iop->fmt)) {
+	} else if (iopte_leaf(pte, lvl, iop->cfg.fmt)) {
 		/*
 		 * Insert a table at the next level to map the old region,
 		 * minus the part we want to unmap
@@ -487,7 +487,7 @@ phys_addr_t arm_lpae_iova_to_phys(struct io_pgtable_ops *ops,
 			return 0;
 
 		/* Leaf entry? */
-		if (iopte_leaf(pte, lvl, data->iop.fmt))
+		if (iopte_leaf(pte, lvl, data->iop.cfg.fmt))
 			goto found_translation;
 
 		/* Take it to the next level */
