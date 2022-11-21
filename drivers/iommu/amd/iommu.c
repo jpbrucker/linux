@@ -2097,7 +2097,8 @@ static struct protection_domain *protection_domain_alloc(unsigned int type)
 	if (type == IOMMU_DOMAIN_IDENTITY)
 		return domain;
 
-	pgtbl_ops = alloc_io_pgtable_ops(pgtable, &domain->iop.pgtbl_cfg, domain);
+	domain->iop.pgtbl_cfg.fmt = pgtable;
+	pgtbl_ops = alloc_io_pgtable_ops(&domain->iop.pgtbl_cfg, domain);
 	if (!pgtbl_ops) {
 		domain_id_free(domain->id);
 		goto out_err;

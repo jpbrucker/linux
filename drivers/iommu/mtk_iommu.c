@@ -598,6 +598,7 @@ static int mtk_iommu_domain_finalise(struct mtk_iommu_domain *dom,
 	}
 
 	dom->cfg = (struct io_pgtable_cfg) {
+		.fmt = ARM_V7S,
 		.quirks = IO_PGTABLE_QUIRK_ARM_NS |
 			IO_PGTABLE_QUIRK_NO_PERMS |
 			IO_PGTABLE_QUIRK_ARM_MTK_EXT,
@@ -614,7 +615,7 @@ static int mtk_iommu_domain_finalise(struct mtk_iommu_domain *dom,
 	else
 		dom->cfg.oas = 35;
 
-	dom->iop = alloc_io_pgtable_ops(ARM_V7S, &dom->cfg, data);
+	dom->iop = alloc_io_pgtable_ops(&dom->cfg, data);
 	if (!dom->iop) {
 		dev_err(data->dev, "Failed to alloc io pgtable\n");
 		return -ENOMEM;

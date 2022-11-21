@@ -435,6 +435,7 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 	 */
 	domain->cfg.coherent_walk = false;
 	domain->cfg.iommu_dev = domain->mmu->root->dev;
+	domain->cfg.fmt = ARM_32_LPAE_S1;
 
 	/*
 	 * Find an unused context.
@@ -445,8 +446,7 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 
 	domain->context_id = ret;
 
-	domain->iop = alloc_io_pgtable_ops(ARM_32_LPAE_S1, &domain->cfg,
-					   domain);
+	domain->iop = alloc_io_pgtable_ops(&domain->cfg, domain);
 	if (!domain->iop) {
 		ipmmu_domain_free_context(domain->mmu->root,
 					  domain->context_id);
