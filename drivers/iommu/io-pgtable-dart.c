@@ -81,7 +81,7 @@ static dart_iopte paddr_to_iopte(phys_addr_t paddr,
 {
 	dart_iopte pte;
 
-	if (data->iop.fmt == APPLE_DART)
+	if (data->iop.cfg.fmt == APPLE_DART)
 		return paddr & APPLE_DART1_PADDR_MASK;
 
 	/* format is APPLE_DART2 */
@@ -96,7 +96,7 @@ static phys_addr_t iopte_to_paddr(dart_iopte pte,
 {
 	u64 paddr;
 
-	if (data->iop.fmt == APPLE_DART)
+	if (data->iop.cfg.fmt == APPLE_DART)
 		return pte & APPLE_DART1_PADDR_MASK;
 
 	/* format is APPLE_DART2 */
@@ -215,13 +215,13 @@ static dart_iopte dart_prot_to_pte(struct dart_io_pgtable *data,
 {
 	dart_iopte pte = 0;
 
-	if (data->iop.fmt == APPLE_DART) {
+	if (data->iop.cfg.fmt == APPLE_DART) {
 		if (!(prot & IOMMU_WRITE))
 			pte |= APPLE_DART1_PTE_PROT_NO_WRITE;
 		if (!(prot & IOMMU_READ))
 			pte |= APPLE_DART1_PTE_PROT_NO_READ;
 	}
-	if (data->iop.fmt == APPLE_DART2) {
+	if (data->iop.cfg.fmt == APPLE_DART2) {
 		if (!(prot & IOMMU_WRITE))
 			pte |= APPLE_DART2_PTE_PROT_NO_WRITE;
 		if (!(prot & IOMMU_READ))
