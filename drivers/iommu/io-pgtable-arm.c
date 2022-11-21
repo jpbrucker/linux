@@ -319,7 +319,8 @@ static int __init arm_lpae_run_tests(struct io_pgtable_cfg *cfg)
 
 	for (i = 0; i < ARRAY_SIZE(fmts); ++i) {
 		cfg_cookie = cfg;
-		ops = alloc_io_pgtable_ops(fmts[i], cfg, cfg);
+		cfg->fmt = fmts[i];
+		ops = alloc_io_pgtable_ops(cfg, cfg);
 		if (!ops) {
 			pr_err("selftest: failed to allocate io pgtable ops\n");
 			return -ENOMEM;

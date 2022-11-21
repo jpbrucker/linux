@@ -930,6 +930,7 @@ static int __init arm_v7s_do_selftests(void)
 {
 	struct io_pgtable_ops *ops;
 	struct io_pgtable_cfg cfg = {
+		.fmt = ARM_V7S,
 		.tlb = &dummy_tlb_ops,
 		.oas = 32,
 		.ias = 32,
@@ -945,7 +946,7 @@ static int __init arm_v7s_do_selftests(void)
 
 	cfg_cookie = &cfg;
 
-	ops = alloc_io_pgtable_ops(ARM_V7S, &cfg, &cfg);
+	ops = alloc_io_pgtable_ops(&cfg, &cfg);
 	if (!ops) {
 		pr_err("selftest: failed to allocate io pgtable ops\n");
 		return -EINVAL;

@@ -258,8 +258,7 @@ struct msm_mmu *msm_iommu_pagetable_create(struct msm_mmu *parent)
 	ttbr0_cfg.quirks &= ~IO_PGTABLE_QUIRK_ARM_TTBR1;
 	ttbr0_cfg.tlb = &null_tlb_ops;
 
-	pagetable->pgtbl_ops = alloc_io_pgtable_ops(ARM_64_LPAE_S1,
-		&ttbr0_cfg, iommu->domain);
+	pagetable->pgtbl_ops = alloc_io_pgtable_ops(&ttbr0_cfg, iommu->domain);
 
 	if (!pagetable->pgtbl_ops) {
 		kfree(pagetable);
