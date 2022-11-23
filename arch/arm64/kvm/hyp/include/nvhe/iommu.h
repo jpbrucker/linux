@@ -6,7 +6,14 @@
 #include <linux/io-pgtable.h>
 
 #if IS_ENABLED(CONFIG_ARM_SMMU_V3_PKVM)
+#include <linux/io-pgtable-arm.h>
+
 int kvm_arm_smmu_v3_register(void);
+
+int kvm_arm_io_pgtable_init(struct io_pgtable_cfg *cfg,
+			    struct arm_lpae_io_pgtable *data);
+int kvm_arm_io_pgtable_alloc(struct io_pgtable *iop, unsigned long pgd_hva);
+int kvm_arm_io_pgtable_free(struct io_pgtable *iop);
 #else /* CONFIG_ARM_SMMU_V3_PKVM */
 static inline int kvm_arm_smmu_v3_register(void)
 {
