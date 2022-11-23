@@ -16,6 +16,7 @@ struct host_arm_smmu_device {
 	struct arm_smmu_device		smmu;
 	pkvm_handle_t			id;
 	u32				boot_gbpa;
+	unsigned int			pgd_order;
 };
 
 #define smmu_to_host(_smmu) \
@@ -192,6 +193,7 @@ static int kvm_arm_smmu_probe(struct platform_device *pdev)
 	size_t size;
 	phys_addr_t ioaddr;
 	struct resource *res;
+	struct io_pgtable_cfg cfg;
 	struct arm_smmu_device *smmu;
 	struct device *dev = &pdev->dev;
 	struct host_arm_smmu_device *host_smmu;
@@ -233,6 +235,31 @@ static int kvm_arm_smmu_probe(struct platform_device *pdev)
 	if (!kvm_arm_smmu_validate_features(smmu))
 		return -ENODEV;
 
+	/*
+	 * Stage-1 should be easy to support, though we do need to allocate a
+	 * context descriptor table.
+	 */
+	cfg = (struct io_pgtable_cfg) {
+		.fmt = ARM_64_LPAE_S2,
+		.pgsize_bitmap = smmu->pgsize_bitmap,
+		.ias = smmu->ias,
+		.oas = smmu->oas,
+		.coherent_walk = smmu->features & ARM_SMMU_FEAT_COHERENCY,
+	};
+
+	/*
+	 * Choose the page and address size. Compute the PGD size and number of
+	 * levels as well, so we know how much memory to pre-allocate.
+	 */
+	ret = io_pgtable_configure(&cfg, &size);
+	if (ret)
+		return ret;
+
+	host_smmu->pgd_order = get_order(size);
+	smmu->pgsize_bitmap = cfg.pgsize_bitmap;
+	smmu->ias = cfg.ias;
+	smmu->oas = cfg.oas;
+
 	ret = arm_smmu_init_one_queue(smmu, &smmu->cmdq.q, smmu->base,
 				      ARM_SMMU_CMDQ_PROD, ARM_SMMU_CMDQ_CONS,
 				      CMDQ_ENT_DWORDS, "cmdq");
@@ -253,6 +280,8 @@ static int kvm_arm_smmu_probe(struct platform_device *pdev)
 	hyp_smmu->mmio_addr = ioaddr;
 	hyp_smmu->mmio_size = size;
 	hyp_smmu->features = smmu->features;
+	hyp_smmu->iommu.pgtable_cfg = cfg;
+
 	kvm_arm_smmu_cur++;
 
 	return 0;
