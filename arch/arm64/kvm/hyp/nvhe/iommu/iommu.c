@@ -186,6 +186,153 @@ out_unlock:
 	return ret;
 }
 
+#define IOMMU_PROT_MASK (IOMMU_READ | IOMMU_WRITE | IOMMU_CACHE |\
+			 IOMMU_NOEXEC | IOMMU_MMIO | IOMMU_PRIV)
+
+size_t kvm_iommu_map_pages(pkvm_handle_t iommu_id, pkvm_handle_t domain_id,
+			   unsigned long iova, phys_addr_t paddr, size_t pgsize,
+			   size_t pgcount, int prot)
+{
+	size_t size;
+	size_t mapped;
+	size_t granule;
+	int ret = -EINVAL;
+	struct io_pgtable iopt;
+	size_t total_mapped = 0;
+	struct kvm_hyp_iommu *iommu;
+	struct kvm_hyp_iommu_domain *domain;
+
+	if (prot & ~IOMMU_PROT_MASK)
+		return 0;
+
+	if (__builtin_mul_overflow(pgsize, pgcount, &size) ||
+	    iova + size < iova || paddr + size < paddr)
+		return 0;
+
+	iommu = kvm_iommu_ops.get_iommu_by_id(iommu_id);
+	if (!iommu)
+		return 0;
+
+	hyp_spin_lock(&iommu->lock);
+	domain = handle_to_domain(iommu, domain_id);
+	if (!domain)
+		goto err_unlock;
+
+	granule = 1 << __ffs(iommu->pgtable->cfg.pgsize_bitmap);
+	if (!IS_ALIGNED(iova | paddr | pgsize, granule))
+		goto err_unlock;
+
+	ret = __pkvm_host_share_dma(paddr, size, !(prot & IOMMU_MMIO));
+	if (ret)
+		goto err_unlock;
+
+	iopt = domain_to_iopt(iommu, domain, domain_id);
+	while (pgcount && !ret) {
+		mapped = 0;
+		ret = iopt_map_pages(&iopt, iova, paddr, pgsize, pgcount, prot,
+				     0, &mapped);
+		WARN_ON(!IS_ALIGNED(mapped, pgsize));
+		WARN_ON(mapped > pgcount * pgsize);
+
+		pgcount -= mapped / pgsize;
+		total_mapped += mapped;
+		iova += mapped;
+		paddr += mapped;
+	}
+
+	/*
+	 * Unshare the bits that haven't been mapped yet. The host calls back
+	 * either to continue mapping, or to unmap and unshare what's been done
+	 * so far.
+	 */
+	if (pgcount)
+		__pkvm_host_unshare_dma(paddr, pgcount * pgsize);
+err_unlock:
+	hyp_spin_unlock(&iommu->lock);
+	return total_mapped;
+}
+
+size_t kvm_iommu_unmap_pages(pkvm_handle_t iommu_id, pkvm_handle_t domain_id,
+			     unsigned long iova, size_t pgsize, size_t pgcount)
+{
+	int ret;
+	size_t size;
+	size_t granule;
+	size_t unmapped;
+	phys_addr_t paddr = 0;
+	struct io_pgtable iopt;
+	size_t total_unmapped = 0;
+	struct kvm_hyp_iommu *iommu;
+	struct kvm_hyp_iommu_domain *domain;
+
+	if (!pgsize || !pgcount)
+		return 0;
+
+	if (__builtin_mul_overflow(pgsize, pgcount, &size) ||
+	    iova + size < iova)
+		return 0;
+
+	iommu = kvm_iommu_ops.get_iommu_by_id(iommu_id);
+	if (!iommu)
+		return 0;
+
+	hyp_spin_lock(&iommu->lock);
+	domain = handle_to_domain(iommu, domain_id);
+	if (!domain)
+		goto out_unlock;
+
+	granule = 1 << __ffs(iommu->pgtable->cfg.pgsize_bitmap);
+	if (!IS_ALIGNED(iova | pgsize, granule))
+		goto out_unlock;
+
+	iopt = domain_to_iopt(iommu, domain, domain_id);
+
+	while (total_unmapped < size) {
+		/*
+		 * One page/block at a time so that we can unshare each page.
+		 * The IOVA range provided may not be physically contiguous, and
+		 * @pgsize may be larger than the one used when mapping.
+		 */
+		unmapped = iopt_unmap_leaf(&iopt, iova, pgsize, &paddr);
+		if (!unmapped || !paddr)
+			goto out_unlock;
+
+		ret = __pkvm_host_unshare_dma(paddr, unmapped);
+		if (WARN_ON(ret))
+			goto out_unlock;
+
+		iova += unmapped;
+		total_unmapped += unmapped;
+	}
+
+out_unlock:
+	hyp_spin_unlock(&iommu->lock);
+	return total_unmapped;
+}
+
+phys_addr_t kvm_iommu_iova_to_phys(pkvm_handle_t iommu_id,
+				   pkvm_handle_t domain_id, unsigned long iova)
+{
+	phys_addr_t phys = 0;
+	struct io_pgtable iopt;
+	struct kvm_hyp_iommu *iommu;
+	struct kvm_hyp_iommu_domain *domain;
+
+	iommu = kvm_iommu_ops.get_iommu_by_id(iommu_id);
+	if (!iommu)
+		return 0;
+
+	hyp_spin_lock(&iommu->lock);
+	domain = handle_to_domain(iommu, domain_id);
+	if (domain) {
+		iopt = domain_to_iopt(iommu, domain, domain_id);
+
+		phys = iopt_iova_to_phys(&iopt, iova);
+	}
+	hyp_spin_unlock(&iommu->lock);
+	return phys;
+}
+
 int kvm_iommu_init_device(struct kvm_hyp_iommu *iommu)
 {
 	void *domains;
