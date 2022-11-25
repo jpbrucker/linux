@@ -110,6 +110,9 @@ int module_change_host_page_prot(u64 pfn, enum kvm_pgtable_prot prot, u64 nr_pag
 void psci_mem_protect_inc(u64 n);
 void psci_mem_protect_dec(u64 n);
 
+void *pkvm_map_donated_memory(unsigned long host_va, size_t size);
+void pkvm_unmap_donated_memory(void *va, size_t size);
+
 static __always_inline void __load_host_stage2(void)
 {
 	if (static_branch_likely(&kvm_protected_mode_initialized))
