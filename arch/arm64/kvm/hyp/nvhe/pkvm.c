@@ -342,7 +342,7 @@ static void *map_donated_memory_noclear(unsigned long host_va, size_t size)
 	return va;
 }
 
-static void *map_donated_memory(unsigned long host_va, size_t size)
+void *pkvm_map_donated_memory(unsigned long host_va, size_t size)
 {
 	void *va = map_donated_memory_noclear(host_va, size);
 
@@ -358,7 +358,7 @@ static void __unmap_donated_memory(void *va, size_t size)
 				       PAGE_ALIGN(size) >> PAGE_SHIFT));
 }
 
-static void unmap_donated_memory(void *va, size_t size)
+void pkvm_unmap_donated_memory(void *va, size_t size)
 {
 	if (!va)
 		return;
@@ -675,8 +675,8 @@ static int init_pkvm_hyp_vcpu_sve(struct pkvm_hyp_vcpu *hyp_vcpu, struct kvm_vcp
 	}
 
 	if (pkvm_hyp_vcpu_is_protected(hyp_vcpu)) {
-		sve_state = map_donated_memory((unsigned long) sve_state,
-					        sve_state_size);
+		sve_state = pkvm_map_donated_memory((unsigned long) sve_state,
+						    sve_state_size);
 		if (!sve_state) {
 			ret = -ENOMEM;
 			goto err;
@@ -901,7 +901,7 @@ err_remove_vm_table_entry:
 	remove_vm_table_entry(hyp_vm->kvm.arch.pkvm.handle);
 err_unlock:
 	hyp_write_unlock(&vm_table_lock);
-	unmap_donated_memory(pgd, pgd_size);
+	pkvm_unmap_donated_memory(pgd, pgd_size);
 err_free_last_ran:
 	hyp_free(last_ran);
 err_free_vm:
