@@ -592,7 +592,7 @@ static void *map_donated_memory_noclear(unsigned long host_va, size_t size)
 	return va;
 }
 
-static void *map_donated_memory(unsigned long host_va, size_t size)
+void *pkvm_map_donated_memory(unsigned long host_va, size_t size)
 {
 	void *va = map_donated_memory_noclear(host_va, size);
 
@@ -608,7 +608,7 @@ static void __unmap_donated_memory(void *va, size_t size)
 				       PAGE_ALIGN(size) >> PAGE_SHIFT));
 }
 
-static void unmap_donated_memory(void *va, size_t size)
+void pkvm_unmap_donated_memory(void *va, size_t size)
 {
 	if (!va)
 		return;
@@ -668,11 +668,11 @@ int __pkvm_init_vm(struct kvm *host_kvm, unsigned long vm_hva,
 
 	ret = -ENOMEM;
 
-	hyp_vm = map_donated_memory(vm_hva, vm_size);
+	hyp_vm = pkvm_map_donated_memory(vm_hva, vm_size);
 	if (!hyp_vm)
 		goto err_remove_mappings;
 
-	last_ran = map_donated_memory(last_ran_hva, last_ran_size);
+	last_ran = pkvm_map_donated_memory(last_ran_hva, last_ran_size);
 	if (!last_ran)
 		goto err_remove_mappings;
 
@@ -699,9 +699,9 @@ err_remove_vm_table_entry:
 err_unlock:
 	hyp_spin_unlock(&vm_table_lock);
 err_remove_mappings:
-	unmap_donated_memory(hyp_vm, vm_size);
-	unmap_donated_memory(last_ran, last_ran_size);
-	unmap_donated_memory(pgd, pgd_size);
+	pkvm_unmap_donated_memory(hyp_vm, vm_size);
+	pkvm_unmap_donated_memory(last_ran, last_ran_size);
+	pkvm_unmap_donated_memory(pgd, pgd_size);
 err_unpin_kvm:
 	hyp_unpin_shared_mem(host_kvm, host_kvm + 1);
 	return ret;
@@ -726,7 +726,7 @@ int __pkvm_init_vcpu(pkvm_handle_t handle, struct kvm_vcpu *host_vcpu,
 	unsigned int idx;
 	int ret;
 
-	hyp_vcpu = map_donated_memory(vcpu_hva, sizeof(*hyp_vcpu));
+	hyp_vcpu = pkvm_map_donated_memory(vcpu_hva, sizeof(*hyp_vcpu));
 	if (!hyp_vcpu)
 		return -ENOMEM;
 
@@ -754,7 +754,7 @@ unlock:
 	hyp_spin_unlock(&vm_table_lock);
 
 	if (ret)
-		unmap_donated_memory(hyp_vcpu, sizeof(*hyp_vcpu));
+		pkvm_unmap_donated_memory(hyp_vcpu, sizeof(*hyp_vcpu));
 
 	return ret;
 }
