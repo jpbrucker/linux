@@ -84,7 +84,7 @@ static void arm_lpae_free_pgtable(struct io_pgtable *iop)
 {
 	struct arm_lpae_io_pgtable *data = io_pgtable_ops_to_data(iop->ops);
 
-	__arm_lpae_free_pgtable(data, data->start_level, iop->pgd);
+	__arm_lpae_free_pgtable(data, data->start_level, iop->pgd, false);
 	kfree(data);
 }
 
