@@ -57,10 +57,21 @@ static inline int hyp_page_count(void *addr)
 	return p->refcount;
 }
 
+/*
+ * Increase the refcount and return its new value.
+ * If the refcount is saturated, return a negative error
+ */
+static inline int hyp_page_ref_inc_return(struct hyp_page *p)
+{
+	if (p->refcount == USHRT_MAX)
+		return -EOVERFLOW;
+
+	return ++p->refcount;
+}
+
 static inline void hyp_page_ref_inc(struct hyp_page *p)
 {
-	BUG_ON(p->refcount == USHRT_MAX);
-	p->refcount++;
+	BUG_ON(hyp_page_ref_inc_return(p) <= 0);
 }
 
 static inline void hyp_page_ref_dec(struct hyp_page *p)
