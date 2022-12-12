@@ -602,27 +602,28 @@ void *pkvm_map_donated_memory(unsigned long host_va, size_t size)
 	return va;
 }
 
-static void __unmap_donated_memory(void *va, size_t size)
+void pkvm_teardown_donated_memory(struct kvm_hyp_memcache *mc, void *va,
+				  size_t dirty_size)
 {
+	size_t size = max(PAGE_ALIGN(dirty_size), PAGE_SIZE);
+
+	if (!va)
+		return;
+
+	memset(va, 0, dirty_size);
+
+	if (mc) {
+		for (void *start = va; start < va + size; start += PAGE_SIZE)
+			push_hyp_memcache(mc, start, hyp_virt_to_phys);
+	}
+
 	WARN_ON(__pkvm_hyp_donate_host(hyp_virt_to_pfn(va),
-				       PAGE_ALIGN(size) >> PAGE_SHIFT));
+				       size >> PAGE_SHIFT));
 }
 
 void pkvm_unmap_donated_memory(void *va, size_t size)
 {
-	if (!va)
-		return;
-
-	memset(va, 0, size);
-	__unmap_donated_memory(va, size);
-}
-
-static void unmap_donated_memory_noclear(void *va, size_t size)
-{
-	if (!va)
-		return;
-
-	__unmap_donated_memory(va, size);
+	pkvm_teardown_donated_memory(NULL, va, size);
 }
 
 /*
@@ -759,18 +760,6 @@ unlock:
 	return ret;
 }
 
-static void
-teardown_donated_memory(struct kvm_hyp_memcache *mc, void *addr, size_t size)
-{
-	size = PAGE_ALIGN(size);
-	memset(addr, 0, size);
-
-	for (void *start = addr; start < addr + size; start += PAGE_SIZE)
-		push_hyp_memcache(mc, start, hyp_virt_to_phys);
-
-	unmap_donated_memory_noclear(addr, size);
-}
-
 int __pkvm_teardown_vm(pkvm_handle_t handle)
 {
 	size_t vm_size, last_ran_size;
@@ -814,20 +803,19 @@ int __pkvm_teardown_vm(pkvm_handle_t handle)
 		vcpu_mc = &hyp_vcpu->vcpu.arch.pkvm_memcache;
 		while (vcpu_mc->nr_pages) {
 			addr = pop_hyp_memcache(vcpu_mc, hyp_phys_to_virt);
-			push_hyp_memcache(mc, addr, hyp_virt_to_phys);
-			unmap_donated_memory_noclear(addr, PAGE_SIZE);
+			pkvm_teardown_donated_memory(mc, addr, 0);
 		}
 
-		teardown_donated_memory(mc, hyp_vcpu, sizeof(*hyp_vcpu));
+		pkvm_teardown_donated_memory(mc, hyp_vcpu, sizeof(*hyp_vcpu));
 	}
 
 	last_vcpu_ran = hyp_vm->kvm.arch.mmu.last_vcpu_ran;
 	last_ran_size = pkvm_get_last_ran_size();
-	teardown_donated_memory(mc, (__force void *)last_vcpu_ran,
-				last_ran_size);
+	pkvm_teardown_donated_memory(mc, (__force void *)last_vcpu_ran,
+				     last_ran_size);
 
 	vm_size = pkvm_get_hyp_vm_size(hyp_vm->kvm.created_vcpus);
-	teardown_donated_memory(mc, hyp_vm, vm_size);
+	pkvm_teardown_donated_memory(mc, hyp_vm, vm_size);
 	hyp_unpin_shared_mem(host_kvm, host_kvm + 1);
 	return 0;
 
