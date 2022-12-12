@@ -768,14 +768,24 @@ out:
 	cpu_reg(host_ctxt, 1) =  ret;
 }
 
+static void *admit_host_page(void *arg)
+{
+	return pkvm_admit_host_page(arg);
+}
+
 static int pkvm_refill_memcache(struct pkvm_hyp_vcpu *hyp_vcpu)
 {
+	int ret;
 	struct pkvm_hyp_vm *hyp_vm = pkvm_hyp_vcpu_to_hyp_vm(hyp_vcpu);
 	u64 nr_pages = VTCR_EL2_LVLS(hyp_vm->kvm.arch.vtcr) - 1;
-	struct kvm_vcpu *host_vcpu = hyp_vcpu->host_vcpu;
+	struct kvm_hyp_memcache host_mc = hyp_vcpu->host_vcpu->arch.pkvm_memcache;
 
-	return refill_memcache(&hyp_vcpu->vcpu.arch.pkvm_memcache, nr_pages,
-			       &host_vcpu->arch.pkvm_memcache);
+	ret =  __topup_hyp_memcache(&hyp_vcpu->vcpu.arch.pkvm_memcache,
+				    nr_pages, admit_host_page,
+				    hyp_virt_to_phys, &host_mc);
+
+	hyp_vcpu->host_vcpu->arch.pkvm_memcache = host_mc;
+	return ret;
 }
 
 static void handle___pkvm_host_map_guest(struct kvm_cpu_context *host_ctxt)
