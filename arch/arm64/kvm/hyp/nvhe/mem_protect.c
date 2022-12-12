@@ -2141,8 +2141,7 @@ void drain_hyp_pool(struct pkvm_hyp_vm *vm, struct kvm_hyp_memcache *mc)
 
 	while (addr) {
 		memset(hyp_virt_to_page(addr), 0, sizeof(struct hyp_page));
-		push_hyp_memcache(mc, addr, hyp_virt_to_phys);
-		WARN_ON(__pkvm_hyp_donate_host(hyp_virt_to_pfn(addr), 1));
+		pkvm_teardown_donated_memory(mc, addr, 0);
 		addr = hyp_alloc_pages(&vm->pool, 0);
 	}
 }

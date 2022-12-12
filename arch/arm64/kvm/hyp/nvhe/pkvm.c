@@ -346,28 +346,29 @@ void *pkvm_map_donated_memory(unsigned long host_va, size_t size)
 	return va;
 }
 
-static void __unmap_donated_memory(void *va, size_t size)
+void pkvm_teardown_donated_memory(struct kvm_hyp_memcache *mc, void *va,
+				  size_t dirty_size)
 {
+	size_t size = max(PAGE_ALIGN(dirty_size), PAGE_SIZE);
+
+	if (!va)
+		return;
+
+	memset(va, 0, dirty_size);
+
+	if (mc) {
+		for (void *start = va; start < va + size; start += PAGE_SIZE)
+			push_hyp_memcache(mc, start, hyp_virt_to_phys);
+	}
+
 	kvm_flush_dcache_to_poc(va, size);
 	WARN_ON(__pkvm_hyp_donate_host(hyp_virt_to_pfn(va),
-				       PAGE_ALIGN(size) >> PAGE_SHIFT));
+				       size >> PAGE_SHIFT));
 }
 
 void pkvm_unmap_donated_memory(void *va, size_t size)
 {
-	if (!va)
-		return;
-
-	memset(va, 0, size);
-	__unmap_donated_memory(va, size);
-}
-
-static void unmap_donated_memory_noclear(void *va, size_t size)
-{
-	if (!va)
-		return;
-
-	__unmap_donated_memory(va, size);
+	pkvm_teardown_donated_memory(NULL, va, size);
 }
 
 /*
@@ -993,8 +994,7 @@ int __pkvm_finalize_teardown_vm(pkvm_handle_t handle)
 		vcpu_mc = &hyp_vcpu->vcpu.arch.pkvm_memcache;
 		while (vcpu_mc->nr_pages) {
 			addr = pop_hyp_memcache(vcpu_mc, hyp_phys_to_virt);
-			push_hyp_memcache(mc, addr, hyp_virt_to_phys);
-			unmap_donated_memory_noclear(addr, PAGE_SIZE);
+			pkvm_teardown_donated_memory(mc, addr, 0);
 		}
 
 		if (pkvm_hyp_vcpu_is_protected(hyp_vcpu))

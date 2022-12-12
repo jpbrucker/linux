@@ -112,6 +112,8 @@ void psci_mem_protect_dec(u64 n);
 
 void *pkvm_map_donated_memory(unsigned long host_va, size_t size);
 void pkvm_unmap_donated_memory(void *va, size_t size);
+void pkvm_teardown_donated_memory(struct kvm_hyp_memcache *mc, void *addr,
+				  size_t dirty_size);
 
 static __always_inline void __load_host_stage2(void)
 {
