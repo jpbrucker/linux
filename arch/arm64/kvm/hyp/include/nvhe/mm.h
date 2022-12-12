@@ -29,6 +29,7 @@ int __pkvm_create_private_mapping(phys_addr_t phys, size_t size,
 				  enum kvm_pgtable_prot prot,
 				  unsigned long *haddr);
 int pkvm_create_stack(phys_addr_t phys, unsigned long *haddr);
+void *pkvm_admit_host_page(void *host_mc);
 int pkvm_alloc_private_va_range(size_t size, unsigned long *haddr);
 void pkvm_remove_mappings(void *from, void *to);
 phys_addr_t __pkvm_private_range_pa(void *va);
