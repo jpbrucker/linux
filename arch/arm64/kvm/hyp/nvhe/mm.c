@@ -351,7 +351,7 @@ int hyp_create_idmap(u32 hyp_va_bits)
 	return __pkvm_create_mappings(start, end - start, start, PAGE_HYP_EXEC);
 }
 
-static void *admit_host_page(void *arg)
+void *pkvm_admit_host_page(void *arg)
 {
 	struct kvm_hyp_memcache *host_mc = arg;
 
@@ -362,7 +362,8 @@ static void *admit_host_page(void *arg)
 	 * The host still owns the pages in its memcache, so we need to go
 	 * through a full host-to-hyp donation cycle to change it. Fortunately,
 	 * __pkvm_host_donate_hyp() takes care of races for us, so if it
-	 * succeeds we're good to go.
+	 * succeeds we're good to go. Because mc is a copy of the memcache
+	 * struct, the host cannot modify mc->head between donate and pop.
 	 */
 	if (__pkvm_host_donate_hyp(hyp_phys_to_pfn(host_mc->head), 1))
 		return NULL;
@@ -377,7 +378,7 @@ int refill_memcache(struct kvm_hyp_memcache *mc, unsigned long min_pages,
 	struct kvm_hyp_memcache tmp = *host_mc;
 	int ret;
 
-	ret =  __topup_hyp_memcache(mc, min_pages, admit_host_page,
+	ret =  __topup_hyp_memcache(mc, min_pages, pkvm_admit_host_page,
 				    hyp_virt_to_phys, &tmp);
 	*host_mc = tmp;
 
