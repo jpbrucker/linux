@@ -9,13 +9,11 @@ extern bool selftest_running;
 typedef u64 arm_lpae_iopte;
 
 struct arm_lpae_io_pgtable {
-	struct io_pgtable	iop;
+	struct io_pgtable_params	iop;
 
-	int			pgd_bits;
-	int			start_level;
-	int			bits_per_level;
-
-	void			*pgd;
+	int				pgd_bits;
+	int				start_level;
+	int				bits_per_level;
 };
 
 /* Struct accessors */
@@ -23,7 +21,7 @@ struct arm_lpae_io_pgtable {
 	container_of((x), struct arm_lpae_io_pgtable, iop)
 
 #define io_pgtable_ops_to_data(x)					\
-	io_pgtable_to_data(io_pgtable_ops_to_pgtable(x))
+	io_pgtable_to_data(io_pgtable_ops_to_params(x))
 
 /*
  * Calculate the right shift amount to get to the portion describing level l

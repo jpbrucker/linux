@@ -239,12 +239,12 @@ static u64 *fetch_pte(struct amd_io_pgtable *pgtable,
 	return pte;
 }
 
-static int iommu_v2_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
+static int iommu_v2_map_pages(struct io_pgtable *iop, unsigned long iova,
 			      phys_addr_t paddr, size_t pgsize, size_t pgcount,
 			      int prot, gfp_t gfp, size_t *mapped)
 {
-	struct protection_domain *pdom = io_pgtable_ops_to_domain(ops);
-	struct io_pgtable_cfg *cfg = &pdom->iop.iop.cfg;
+	struct protection_domain *pdom = io_pgtable_ops_to_domain(iop->ops);
+	struct io_pgtable_cfg *cfg = &pdom->iop.iop_params.cfg;
 	u64 *pte;
 	unsigned long map_size;
 	unsigned long mapped_size = 0;
@@ -290,13 +290,13 @@ out:
 	return ret;
 }
 
-static unsigned long iommu_v2_unmap_pages(struct io_pgtable_ops *ops,
+static unsigned long iommu_v2_unmap_pages(struct io_pgtable *iop,
 					  unsigned long iova,
 					  size_t pgsize, size_t pgcount,
 					  struct iommu_iotlb_gather *gather)
 {
-	struct amd_io_pgtable *pgtable = io_pgtable_ops_to_data(ops);
-	struct io_pgtable_cfg *cfg = &pgtable->iop.cfg;
+	struct amd_io_pgtable *pgtable = io_pgtable_ops_to_data(iop->ops);
+	struct io_pgtable_cfg *cfg = &pgtable->iop_params.cfg;
 	unsigned long unmap_size;
 	unsigned long unmapped = 0;
 	size_t size = pgcount << __ffs(pgsize);
@@ -319,9 +319,9 @@ static unsigned long iommu_v2_unmap_pages(struct io_pgtable_ops *ops,
 	return unmapped;
 }
 
-static phys_addr_t iommu_v2_iova_to_phys(struct io_pgtable_ops *ops, unsigned long iova)
+static phys_addr_t iommu_v2_iova_to_phys(struct io_pgtable *iop, unsigned long iova)
 {
-	struct amd_io_pgtable *pgtable = io_pgtable_ops_to_data(ops);
+	struct amd_io_pgtable *pgtable = io_pgtable_ops_to_data(iop->ops);
 	unsigned long offset_mask, pte_pgsize;
 	u64 *pte, __pte;
 
@@ -362,7 +362,7 @@ static const struct iommu_flush_ops v2_flush_ops = {
 static void v2_free_pgtable(struct io_pgtable *iop)
 {
 	struct protection_domain *pdom;
-	struct amd_io_pgtable *pgtable = container_of(iop, struct amd_io_pgtable, iop);
+	struct amd_io_pgtable *pgtable = io_pgtable_ops_to_data(iop->ops);
 
 	pdom = container_of(pgtable, struct protection_domain, iop);
 	if (!(pdom->flags & PD_IOMMUV2_MASK))
@@ -375,38 +375,39 @@ static void v2_free_pgtable(struct io_pgtable *iop)
 	amd_iommu_domain_update(pdom);
 
 	/* Free page table */
-	free_pgtable(pgtable->pgd, get_pgtable_level());
+	free_pgtable(iop->pgd, get_pgtable_level());
 }
 
-static struct io_pgtable *v2_alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
+int v2_alloc_pgtable(struct io_pgtable *iop, struct io_pgtable_cfg *cfg, void *cookie)
 {
 	struct amd_io_pgtable *pgtable = io_pgtable_cfg_to_data(cfg);
 	struct protection_domain *pdom = (struct protection_domain *)cookie;
 	int ret;
 
-	pgtable->pgd = alloc_pgtable_page();
-	if (!pgtable->pgd)
-		return NULL;
+	iop->pgd = alloc_pgtable_page();
+	if (!iop->pgd)
+		return -ENOMEM;
 
-	ret = amd_iommu_domain_set_gcr3(&pdom->domain, 0, iommu_virt_to_phys(pgtable->pgd));
+	ret = amd_iommu_domain_set_gcr3(&pdom->domain, 0, iommu_virt_to_phys(iop->pgd));
 	if (ret)
 		goto err_free_pgd;
 
-	pgtable->iop.ops.map_pages    = iommu_v2_map_pages;
-	pgtable->iop.ops.unmap_pages  = iommu_v2_unmap_pages;
-	pgtable->iop.ops.iova_to_phys = iommu_v2_iova_to_phys;
+	pgtable->iop_params.ops.map_pages    = iommu_v2_map_pages;
+	pgtable->iop_params.ops.unmap_pages  = iommu_v2_unmap_pages;
+	pgtable->iop_params.ops.iova_to_phys = iommu_v2_iova_to_phys;
+	iop->ops = &pgtable->iop_params.ops;
 
 	cfg->pgsize_bitmap = AMD_IOMMU_PGSIZES_V2,
 	cfg->ias           = IOMMU_IN_ADDR_BIT_SIZE,
 	cfg->oas           = IOMMU_OUT_ADDR_BIT_SIZE,
 	cfg->tlb           = &v2_flush_ops;
 
-	return &pgtable->iop;
+	return 0;
 
 err_free_pgd:
-	free_pgtable_page(pgtable->pgd);
+	free_pgtable_page(iop->pgd);
 
-	return NULL;
+	return ret;
 }
 
 struct io_pgtable_init_fns io_pgtable_amd_iommu_v2_init_fns = {

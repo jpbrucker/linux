@@ -122,8 +122,8 @@ static const struct io_pgtable_cfg *qcom_adreno_smmu_get_ttbr1_cfg(
 		const void *cookie)
 {
 	struct arm_smmu_domain *smmu_domain = (void *)cookie;
-	struct io_pgtable *pgtable =
-		io_pgtable_ops_to_pgtable(smmu_domain->pgtbl_ops);
+	struct io_pgtable_params *pgtable =
+		io_pgtable_ops_to_params(smmu_domain->pgtbl.ops);
 	return &pgtable->cfg;
 }
 
@@ -137,7 +137,8 @@ static int qcom_adreno_smmu_set_ttbr0_cfg(const void *cookie,
 		const struct io_pgtable_cfg *pgtbl_cfg)
 {
 	struct arm_smmu_domain *smmu_domain = (void *)cookie;
-	struct io_pgtable *pgtable = io_pgtable_ops_to_pgtable(smmu_domain->pgtbl_ops);
+	struct io_pgtable_params *pgtable =
+		io_pgtable_ops_to_params(smmu_domain->pgtbl.ops);
 	struct arm_smmu_cfg *cfg = &smmu_domain->cfg;
 	struct arm_smmu_cb *cb = &smmu_domain->smmu->cbs[cfg->cbndx];
 
