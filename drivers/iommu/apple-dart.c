@@ -253,14 +253,14 @@ struct apple_dart_atomic_stream_map {
 /*
  * This structure is attached to each iommu domain handled by a DART.
  *
- * @pgtbl_ops: pagetable ops allocated by io-pgtable
+ * @pgtbl: pagetable allocated by io-pgtable
  * @finalized: true if the domain has been completely initialized
  * @init_lock: protects domain initialization
  * @stream_maps: streams attached to this domain (valid for DMA/UNMANAGED only)
  * @domain: core iommu domain pointer
  */
 struct apple_dart_domain {
-	struct io_pgtable_ops *pgtbl_ops;
+	struct io_pgtable pgtbl;
 
 	bool finalized;
 	struct mutex init_lock;
@@ -516,12 +516,8 @@ static phys_addr_t apple_dart_iova_to_phys(struct iommu_domain *domain,
 					   dma_addr_t iova)
 {
 	struct apple_dart_domain *dart_domain = to_dart_domain(domain);
-	struct io_pgtable_ops *ops = dart_domain->pgtbl_ops;
 
-	if (!ops)
-		return 0;
-
-	return ops->iova_to_phys(ops, iova);
+	return iopt_iova_to_phys(&dart_domain->pgtbl, iova);
 }
 
 static int apple_dart_map_pages(struct iommu_domain *domain, unsigned long iova,
@@ -530,13 +526,9 @@ static int apple_dart_map_pages(struct iommu_domain *domain, unsigned long iova,
 				size_t *mapped)
 {
 	struct apple_dart_domain *dart_domain = to_dart_domain(domain);
-	struct io_pgtable_ops *ops = dart_domain->pgtbl_ops;
 
-	if (!ops)
-		return -ENODEV;
-
-	return ops->map_pages(ops, iova, paddr, pgsize, pgcount, prot, gfp,
-			      mapped);
+	return iopt_map_pages(&dart_domain->pgtbl, iova, paddr, pgsize, pgcount,
+			      prot, gfp, mapped);
 }
 
 static size_t apple_dart_unmap_pages(struct iommu_domain *domain,
@@ -545,9 +537,9 @@ static size_t apple_dart_unmap_pages(struct iommu_domain *domain,
 				     struct iommu_iotlb_gather *gather)
 {
 	struct apple_dart_domain *dart_domain = to_dart_domain(domain);
-	struct io_pgtable_ops *ops = dart_domain->pgtbl_ops;
 
-	return ops->unmap_pages(ops, iova, pgsize, pgcount, gather);
+	return iopt_unmap_pages(&dart_domain->pgtbl, iova, pgsize, pgcount,
+				gather);
 }
 
 static void
@@ -556,7 +548,7 @@ apple_dart_setup_translation(struct apple_dart_domain *domain,
 {
 	int i;
 	struct io_pgtable_cfg *pgtbl_cfg =
-		&io_pgtable_ops_to_pgtable(domain->pgtbl_ops)->cfg;
+		&io_pgtable_ops_to_params(domain->pgtbl.ops)->cfg;
 
 	for (i = 0; i < pgtbl_cfg->apple_dart_cfg.n_ttbrs; ++i)
 		apple_dart_hw_set_ttbr(stream_map, i,
@@ -598,11 +590,9 @@ static int apple_dart_finalize_domain(struct iommu_domain *domain,
 		.iommu_dev = dart->dev,
 	};
 
-	dart_domain->pgtbl_ops = alloc_io_pgtable_ops(&pgtbl_cfg, domain);
-	if (!dart_domain->pgtbl_ops) {
-		ret = -ENOMEM;
+	ret = alloc_io_pgtable_ops(&dart_domain->pgtbl, &pgtbl_cfg, domain);
+	if (ret)
 		goto done;
-	}
 
 	domain->pgsize_bitmap = pgtbl_cfg.pgsize_bitmap;
 	domain->geometry.aperture_start = 0;
@@ -732,7 +722,7 @@ static struct iommu_domain *apple_dart_domain_alloc(unsigned int type)
 
 	mutex_init(&dart_domain->init_lock);
 
-	/* no need to allocate pgtbl_ops or do any other finalization steps */
+	/* no need to allocate pgtbl or do any other finalization steps */
 	if (type == IOMMU_DOMAIN_IDENTITY || type == IOMMU_DOMAIN_BLOCKED)
 		dart_domain->finalized = true;
 
@@ -743,8 +733,8 @@ static void apple_dart_domain_free(struct iommu_domain *domain)
 {
 	struct apple_dart_domain *dart_domain = to_dart_domain(domain);
 
-	if (dart_domain->pgtbl_ops)
-		free_io_pgtable_ops(dart_domain->pgtbl_ops);
+	if (dart_domain->pgtbl.ops)
+		free_io_pgtable_ops(&dart_domain->pgtbl);
 
 	kfree(dart_domain);
 }

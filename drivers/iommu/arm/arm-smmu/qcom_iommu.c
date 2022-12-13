@@ -64,7 +64,7 @@ struct qcom_iommu_ctx {
 };
 
 struct qcom_iommu_domain {
-	struct io_pgtable_ops	*pgtbl_ops;
+	struct io_pgtable	 pgtbl;
 	spinlock_t		 pgtbl_lock;
 	struct mutex		 init_mutex; /* Protects iommu pointer */
 	struct iommu_domain	 domain;
@@ -229,7 +229,6 @@ static int qcom_iommu_init_domain(struct iommu_domain *domain,
 {
 	struct qcom_iommu_domain *qcom_domain = to_qcom_iommu_domain(domain);
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-	struct io_pgtable_ops *pgtbl_ops;
 	struct io_pgtable_cfg pgtbl_cfg;
 	int i, ret = 0;
 	u32 reg;
@@ -250,10 +249,9 @@ static int qcom_iommu_init_domain(struct iommu_domain *domain,
 	qcom_domain->iommu = qcom_iommu;
 	qcom_domain->fwspec = fwspec;
 
-	pgtbl_ops = alloc_io_pgtable_ops(&pgtbl_cfg, qcom_domain);
-	if (!pgtbl_ops) {
+	ret = alloc_io_pgtable_ops(&qcom_domain->pgtbl, &pgtbl_cfg, qcom_domain);
+	if (ret) {
 		dev_err(qcom_iommu->dev, "failed to allocate pagetable ops\n");
-		ret = -ENOMEM;
 		goto out_clear_iommu;
 	}
 
@@ -308,9 +306,6 @@ static int qcom_iommu_init_domain(struct iommu_domain *domain,
 
 	mutex_unlock(&qcom_domain->init_mutex);
 
-	/* Publish page table ops for map/unmap */
-	qcom_domain->pgtbl_ops = pgtbl_ops;
-
 	return 0;
 
 out_clear_iommu:
@@ -353,7 +348,7 @@ static void qcom_iommu_domain_free(struct iommu_domain *domain)
 		 * is on to avoid unclocked accesses in the TLB inv path:
 		 */
 		pm_runtime_get_sync(qcom_domain->iommu->dev);
-		free_io_pgtable_ops(qcom_domain->pgtbl_ops);
+		free_io_pgtable_ops(&qcom_domain->pgtbl);
 		pm_runtime_put_sync(qcom_domain->iommu->dev);
 	}
 
@@ -395,13 +390,10 @@ static int qcom_iommu_map(struct iommu_domain *domain, unsigned long iova,
 	int ret;
 	unsigned long flags;
 	struct qcom_iommu_domain *qcom_domain = to_qcom_iommu_domain(domain);
-	struct io_pgtable_ops *ops = qcom_domain->pgtbl_ops;
-
-	if (!ops)
-		return -ENODEV;
 
 	spin_lock_irqsave(&qcom_domain->pgtbl_lock, flags);
-	ret = ops->map_pages(ops, iova, paddr, pgsize, pgcount, prot, GFP_ATOMIC, mapped);
+	ret = iopt_map_pages(&qcom_domain->pgtbl, iova, paddr, pgsize, pgcount,
+			     prot, GFP_ATOMIC, mapped);
 	spin_unlock_irqrestore(&qcom_domain->pgtbl_lock, flags);
 	return ret;
 }
@@ -413,10 +405,6 @@ static size_t qcom_iommu_unmap(struct iommu_domain *domain, unsigned long iova,
 	size_t ret;
 	unsigned long flags;
 	struct qcom_iommu_domain *qcom_domain = to_qcom_iommu_domain(domain);
-	struct io_pgtable_ops *ops = qcom_domain->pgtbl_ops;
-
-	if (!ops)
-		return 0;
 
 	/* NOTE: unmap can be called after client device is powered off,
 	 * for example, with GPUs or anything involving dma-buf.  So we
@@ -425,7 +413,8 @@ static size_t qcom_iommu_unmap(struct iommu_domain *domain, unsigned long iova,
 	 */
 	pm_runtime_get_sync(qcom_domain->iommu->dev);
 	spin_lock_irqsave(&qcom_domain->pgtbl_lock, flags);
-	ret = ops->unmap_pages(ops, iova, pgsize, pgcount, gather);
+	ret = iopt_unmap_pages(&qcom_domain->pgtbl, iova, pgsize, pgcount,
+			       gather);
 	spin_unlock_irqrestore(&qcom_domain->pgtbl_lock, flags);
 	pm_runtime_put_sync(qcom_domain->iommu->dev);
 
@@ -435,13 +424,12 @@ static size_t qcom_iommu_unmap(struct iommu_domain *domain, unsigned long iova,
 static void qcom_iommu_flush_iotlb_all(struct iommu_domain *domain)
 {
 	struct qcom_iommu_domain *qcom_domain = to_qcom_iommu_domain(domain);
-	struct io_pgtable *pgtable = container_of(qcom_domain->pgtbl_ops,
-						  struct io_pgtable, ops);
-	if (!qcom_domain->pgtbl_ops)
+
+	if (!qcom_domain->pgtbl.ops)
 		return;
 
 	pm_runtime_get_sync(qcom_domain->iommu->dev);
-	qcom_iommu_tlb_sync(pgtable->cookie);
+	qcom_iommu_tlb_sync(qcom_domain->pgtbl.cookie);
 	pm_runtime_put_sync(qcom_domain->iommu->dev);
 }
 
@@ -457,13 +445,9 @@ static phys_addr_t qcom_iommu_iova_to_phys(struct iommu_domain *domain,
 	phys_addr_t ret;
 	unsigned long flags;
 	struct qcom_iommu_domain *qcom_domain = to_qcom_iommu_domain(domain);
-	struct io_pgtable_ops *ops = qcom_domain->pgtbl_ops;
-
-	if (!ops)
-		return 0;
 
 	spin_lock_irqsave(&qcom_domain->pgtbl_lock, flags);
-	ret = ops->iova_to_phys(ops, iova);
+	ret = iopt_iova_to_phys(&qcom_domain->pgtbl, iova);
 	spin_unlock_irqrestore(&qcom_domain->pgtbl_lock, flags);
 
 	return ret;

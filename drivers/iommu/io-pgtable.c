@@ -34,27 +34,30 @@ io_pgtable_init_table[IO_PGTABLE_NUM_FMTS] = {
 #endif
 };
 
-struct io_pgtable_ops *alloc_io_pgtable_ops(struct io_pgtable_cfg *cfg,
-					    void *cookie)
+int alloc_io_pgtable_ops(struct io_pgtable *iop, struct io_pgtable_cfg *cfg,
+			 void *cookie)
 {
-	struct io_pgtable *iop;
+	int ret;
+	struct io_pgtable_params *params;
 	const struct io_pgtable_init_fns *fns;
 
 	if (cfg->fmt >= IO_PGTABLE_NUM_FMTS)
-		return NULL;
+		return -EINVAL;
 
 	fns = io_pgtable_init_table[cfg->fmt];
 	if (!fns)
-		return NULL;
+		return -EINVAL;
 
-	iop = fns->alloc(cfg, cookie);
-	if (!iop)
-		return NULL;
+	ret = fns->alloc(iop, cfg, cookie);
+	if (ret)
+		return ret;
+
+	params = io_pgtable_ops_to_params(iop->ops);
 
 	iop->cookie	= cookie;
-	iop->cfg	= *cfg;
+	params->cfg	= *cfg;
 
-	return &iop->ops;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(alloc_io_pgtable_ops);
 
@@ -62,16 +65,17 @@ EXPORT_SYMBOL_GPL(alloc_io_pgtable_ops);
  * It is the IOMMU driver's responsibility to ensure that the page table
  * is no longer accessible to the walker by this point.
  */
-void free_io_pgtable_ops(struct io_pgtable_ops *ops)
+void free_io_pgtable_ops(struct io_pgtable *iop)
 {
-	struct io_pgtable *iop;
+	struct io_pgtable_params *params;
 
-	if (!ops)
+	if (!iop)
 		return;
 
-	iop = io_pgtable_ops_to_pgtable(ops);
-	io_pgtable_tlb_flush_all(iop);
-	io_pgtable_init_table[iop->cfg.fmt]->free(iop);
+	params = io_pgtable_ops_to_params(iop->ops);
+	io_pgtable_tlb_flush_all(&params->cfg, iop);
+	io_pgtable_init_table[params->cfg.fmt]->free(iop);
+	memset(iop, 0, sizeof(*iop));
 }
 EXPORT_SYMBOL_GPL(free_io_pgtable_ops);
 

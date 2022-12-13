@@ -34,7 +34,7 @@
 	container_of((x), struct dart_io_pgtable, iop)
 
 #define io_pgtable_ops_to_data(x)					\
-	io_pgtable_to_data(io_pgtable_ops_to_pgtable(x))
+	io_pgtable_to_data(io_pgtable_ops_to_params(x))
 
 #define DART_GRANULE(d)						\
 	(sizeof(dart_iopte) << (d)->bits_per_level)
@@ -65,12 +65,10 @@
 #define iopte_deref(pte, d) __va(iopte_to_paddr(pte, d))
 
 struct dart_io_pgtable {
-	struct io_pgtable	iop;
+	struct io_pgtable_params	iop;
 
-	int			tbl_bits;
-	int			bits_per_level;
-
-	void			*pgd[DART_MAX_TABLES];
+	int				tbl_bits;
+	int				bits_per_level;
 };
 
 typedef u64 dart_iopte;
@@ -170,10 +168,14 @@ static dart_iopte dart_install_table(dart_iopte *table,
 	return old;
 }
 
-static int dart_get_table(struct dart_io_pgtable *data, unsigned long iova)
+static dart_iopte *dart_get_table(struct io_pgtable *iop,
+				  struct dart_io_pgtable *data,
+				  unsigned long iova)
 {
-	return (iova >> (3 * data->bits_per_level + ilog2(sizeof(dart_iopte)))) &
+	int tbl = (iova >> (3 * data->bits_per_level + ilog2(sizeof(dart_iopte)))) &
 		((1 << data->tbl_bits) - 1);
+
+	return iop->pgd + DART_GRANULE(data) * tbl;
 }
 
 static int dart_get_l1_index(struct dart_io_pgtable *data, unsigned long iova)
@@ -190,12 +192,12 @@ static int dart_get_l2_index(struct dart_io_pgtable *data, unsigned long iova)
 		 ((1 << data->bits_per_level) - 1);
 }
 
-static  dart_iopte *dart_get_l2(struct dart_io_pgtable *data, unsigned long iova)
+static  dart_iopte *dart_get_l2(struct io_pgtable *iop,
+				struct dart_io_pgtable *data, unsigned long iova)
 {
 	dart_iopte pte, *ptep;
-	int tbl = dart_get_table(data, iova);
 
-	ptep = data->pgd[tbl];
+	ptep = dart_get_table(iop, data, iova);
 	if (!ptep)
 		return NULL;
 
@@ -233,14 +235,14 @@ static dart_iopte dart_prot_to_pte(struct dart_io_pgtable *data,
 	return pte;
 }
 
-static int dart_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
+static int dart_map_pages(struct io_pgtable *iop, unsigned long iova,
 			      phys_addr_t paddr, size_t pgsize, size_t pgcount,
 			      int iommu_prot, gfp_t gfp, size_t *mapped)
 {
-	struct dart_io_pgtable *data = io_pgtable_ops_to_data(ops);
+	struct dart_io_pgtable *data = io_pgtable_ops_to_data(iop->ops);
 	struct io_pgtable_cfg *cfg = &data->iop.cfg;
 	size_t tblsz = DART_GRANULE(data);
-	int ret = 0, tbl, num_entries, max_entries, map_idx_start;
+	int ret = 0, num_entries, max_entries, map_idx_start;
 	dart_iopte pte, *cptep, *ptep;
 	dart_iopte prot;
 
@@ -254,9 +256,7 @@ static int dart_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 	if (!(iommu_prot & (IOMMU_READ | IOMMU_WRITE)))
 		return 0;
 
-	tbl = dart_get_table(data, iova);
-
-	ptep = data->pgd[tbl];
+	ptep = dart_get_table(iop, data, iova);
 	ptep += dart_get_l1_index(data, iova);
 	pte = READ_ONCE(*ptep);
 
@@ -295,11 +295,11 @@ static int dart_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 	return ret;
 }
 
-static size_t dart_unmap_pages(struct io_pgtable_ops *ops, unsigned long iova,
+static size_t dart_unmap_pages(struct io_pgtable *iop, unsigned long iova,
 				   size_t pgsize, size_t pgcount,
 				   struct iommu_iotlb_gather *gather)
 {
-	struct dart_io_pgtable *data = io_pgtable_ops_to_data(ops);
+	struct dart_io_pgtable *data = io_pgtable_ops_to_data(iop->ops);
 	struct io_pgtable_cfg *cfg = &data->iop.cfg;
 	int i = 0, num_entries, max_entries, unmap_idx_start;
 	dart_iopte pte, *ptep;
@@ -307,7 +307,7 @@ static size_t dart_unmap_pages(struct io_pgtable_ops *ops, unsigned long iova,
 	if (WARN_ON(pgsize != cfg->pgsize_bitmap || !pgcount))
 		return 0;
 
-	ptep = dart_get_l2(data, iova);
+	ptep = dart_get_l2(iop, data, iova);
 
 	/* Valid L2 IOPTE pointer? */
 	if (WARN_ON(!ptep))
@@ -328,7 +328,7 @@ static size_t dart_unmap_pages(struct io_pgtable_ops *ops, unsigned long iova,
 		*ptep = 0;
 
 		if (!iommu_iotlb_gather_queued(gather))
-			io_pgtable_tlb_add_page(&data->iop, gather,
+			io_pgtable_tlb_add_page(cfg, iop, gather,
 						iova + i * pgsize, pgsize);
 
 		ptep++;
@@ -338,13 +338,13 @@ static size_t dart_unmap_pages(struct io_pgtable_ops *ops, unsigned long iova,
 	return i * pgsize;
 }
 
-static phys_addr_t dart_iova_to_phys(struct io_pgtable_ops *ops,
+static phys_addr_t dart_iova_to_phys(struct io_pgtable *iop,
 					 unsigned long iova)
 {
-	struct dart_io_pgtable *data = io_pgtable_ops_to_data(ops);
+	struct dart_io_pgtable *data = io_pgtable_ops_to_data(iop->ops);
 	dart_iopte pte, *ptep;
 
-	ptep = dart_get_l2(data, iova);
+	ptep = dart_get_l2(iop, data, iova);
 
 	/* Valid L2 IOPTE pointer? */
 	if (!ptep)
@@ -394,56 +394,56 @@ dart_alloc_pgtable(struct io_pgtable_cfg *cfg)
 	return data;
 }
 
-static struct io_pgtable *
-apple_dart_alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
+static int apple_dart_alloc_pgtable(struct io_pgtable *iop,
+				    struct io_pgtable_cfg *cfg, void *cookie)
 {
 	struct dart_io_pgtable *data;
 	int i;
 
 	if (!cfg->coherent_walk)
-		return NULL;
+		return -EINVAL;
 
 	if (cfg->oas != 36 && cfg->oas != 42)
-		return NULL;
+		return -EINVAL;
 
 	if (cfg->ias > cfg->oas)
-		return NULL;
+		return -EINVAL;
 
 	if (!(cfg->pgsize_bitmap == SZ_4K || cfg->pgsize_bitmap == SZ_16K))
-		return NULL;
+		return -EINVAL;
 
 	data = dart_alloc_pgtable(cfg);
 	if (!data)
-		return NULL;
+		return -ENOMEM;
 
 	cfg->apple_dart_cfg.n_ttbrs = 1 << data->tbl_bits;
 
-	for (i = 0; i < cfg->apple_dart_cfg.n_ttbrs; ++i) {
-		data->pgd[i] = __dart_alloc_pages(DART_GRANULE(data), GFP_KERNEL,
-					   cfg);
-		if (!data->pgd[i])
-			goto out_free_data;
-		cfg->apple_dart_cfg.ttbr[i] = virt_to_phys(data->pgd[i]);
-	}
+	iop->pgd = __dart_alloc_pages(cfg->apple_dart_cfg.n_ttbrs *
+				      DART_GRANULE(data), GFP_KERNEL, cfg);
+	if (!iop->pgd)
+		goto out_free_data;
 
-	return &data->iop;
+	for (i = 0; i < cfg->apple_dart_cfg.n_ttbrs; ++i)
+		cfg->apple_dart_cfg.ttbr[i] = virt_to_phys(iop->pgd) +
+					      i * DART_GRANULE(data);
+
+	iop->ops = &data->iop.ops;
+	return 0;
 
 out_free_data:
-	while (--i >= 0)
-		free_pages((unsigned long)data->pgd[i],
-			   get_order(DART_GRANULE(data)));
 	kfree(data);
-	return NULL;
+	return -ENOMEM;
 }
 
 static void apple_dart_free_pgtable(struct io_pgtable *iop)
 {
-	struct dart_io_pgtable *data = io_pgtable_to_data(iop);
+	struct dart_io_pgtable *data = io_pgtable_ops_to_data(iop->ops);
+	size_t n_ttbrs = 1 << data->tbl_bits;
 	dart_iopte *ptep, *end;
 	int i;
 
-	for (i = 0; i < (1 << data->tbl_bits) && data->pgd[i]; ++i) {
-		ptep = data->pgd[i];
+	for (i = 0; i < n_ttbrs; ++i) {
+		ptep = iop->pgd + DART_GRANULE(data) * i;
 		end = (void *)ptep + DART_GRANULE(data);
 
 		while (ptep != end) {
@@ -456,10 +456,9 @@ static void apple_dart_free_pgtable(struct io_pgtable *iop)
 				free_pages(page, get_order(DART_GRANULE(data)));
 			}
 		}
-		free_pages((unsigned long)data->pgd[i],
-			   get_order(DART_GRANULE(data)));
 	}
-
+	free_pages((unsigned long)iop->pgd,
+		   get_order(DART_GRANULE(data) * n_ttbrs));
 	kfree(data);
 }
 

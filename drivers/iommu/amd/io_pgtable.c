@@ -360,11 +360,11 @@ static void free_clear_pte(u64 *pte, u64 pteval, struct list_head *freelist)
  * supporting all features of AMD IOMMU page tables like level skipping
  * and full 64 bit address spaces.
  */
-static int iommu_v1_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
+static int iommu_v1_map_pages(struct io_pgtable *iop, unsigned long iova,
 			      phys_addr_t paddr, size_t pgsize, size_t pgcount,
 			      int prot, gfp_t gfp, size_t *mapped)
 {
-	struct protection_domain *dom = io_pgtable_ops_to_domain(ops);
+	struct protection_domain *dom = io_pgtable_ops_to_domain(iop->ops);
 	LIST_HEAD(freelist);
 	bool updated = false;
 	u64 __pte, *pte;
@@ -435,12 +435,12 @@ out:
 	return ret;
 }
 
-static unsigned long iommu_v1_unmap_pages(struct io_pgtable_ops *ops,
+static unsigned long iommu_v1_unmap_pages(struct io_pgtable *iop,
 					  unsigned long iova,
 					  size_t pgsize, size_t pgcount,
 					  struct iommu_iotlb_gather *gather)
 {
-	struct amd_io_pgtable *pgtable = io_pgtable_ops_to_data(ops);
+	struct amd_io_pgtable *pgtable = io_pgtable_ops_to_data(iop->ops);
 	unsigned long long unmapped;
 	unsigned long unmap_size;
 	u64 *pte;
@@ -469,9 +469,9 @@ static unsigned long iommu_v1_unmap_pages(struct io_pgtable_ops *ops,
 	return unmapped;
 }
 
-static phys_addr_t iommu_v1_iova_to_phys(struct io_pgtable_ops *ops, unsigned long iova)
+static phys_addr_t iommu_v1_iova_to_phys(struct io_pgtable *iop, unsigned long iova)
 {
-	struct amd_io_pgtable *pgtable = io_pgtable_ops_to_data(ops);
+	struct amd_io_pgtable *pgtable = io_pgtable_ops_to_data(iop->ops);
 	unsigned long offset_mask, pte_pgsize;
 	u64 *pte, __pte;
 
@@ -491,7 +491,7 @@ static phys_addr_t iommu_v1_iova_to_phys(struct io_pgtable_ops *ops, unsigned lo
  */
 static void v1_free_pgtable(struct io_pgtable *iop)
 {
-	struct amd_io_pgtable *pgtable = container_of(iop, struct amd_io_pgtable, iop);
+	struct amd_io_pgtable *pgtable = io_pgtable_ops_to_data(iop->ops);
 	struct protection_domain *dom;
 	LIST_HEAD(freelist);
 
@@ -515,7 +515,8 @@ static void v1_free_pgtable(struct io_pgtable *iop)
 	put_pages_list(&freelist);
 }
 
-static struct io_pgtable *v1_alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
+int v1_alloc_pgtable(struct io_pgtable *iop, struct io_pgtable_cfg *cfg,
+		     void *cookie)
 {
 	struct amd_io_pgtable *pgtable = io_pgtable_cfg_to_data(cfg);
 
@@ -524,11 +525,12 @@ static struct io_pgtable *v1_alloc_pgtable(struct io_pgtable_cfg *cfg, void *coo
 	cfg->oas            = IOMMU_OUT_ADDR_BIT_SIZE,
 	cfg->tlb            = &v1_flush_ops;
 
-	pgtable->iop.ops.map_pages    = iommu_v1_map_pages;
-	pgtable->iop.ops.unmap_pages  = iommu_v1_unmap_pages;
-	pgtable->iop.ops.iova_to_phys = iommu_v1_iova_to_phys;
+	pgtable->iop_params.ops.map_pages    = iommu_v1_map_pages;
+	pgtable->iop_params.ops.unmap_pages  = iommu_v1_unmap_pages;
+	pgtable->iop_params.ops.iova_to_phys = iommu_v1_iova_to_phys;
+	iop->ops = &pgtable->iop_params.ops;
 
-	return &pgtable->iop;
+	return 0;
 }
 
 struct io_pgtable_init_fns io_pgtable_amd_iommu_v1_init_fns = {
