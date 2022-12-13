@@ -127,7 +127,7 @@ struct panfrost_mmu {
 	struct panfrost_device *pfdev;
 	struct kref refcount;
 	struct io_pgtable_cfg pgtbl_cfg;
-	struct io_pgtable_ops *pgtbl_ops;
+	struct io_pgtable pgtbl;
 	struct drm_mm mm;
 	spinlock_t mm_lock;
 	int as;

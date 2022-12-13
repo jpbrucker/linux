@@ -73,7 +73,7 @@ struct ipmmu_vmsa_domain {
 	struct iommu_domain io_domain;
 
 	struct io_pgtable_cfg cfg;
-	struct io_pgtable_ops *iop;
+	struct io_pgtable iop;
 
 	unsigned int context_id;
 	struct mutex mutex;			/* Protects mappings */
@@ -446,11 +446,11 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 
 	domain->context_id = ret;
 
-	domain->iop = alloc_io_pgtable_ops(&domain->cfg, domain);
-	if (!domain->iop) {
+	ret = alloc_io_pgtable_ops(&domain->iop, &domain->cfg, domain);
+	if (ret) {
 		ipmmu_domain_free_context(domain->mmu->root,
 					  domain->context_id);
-		return -EINVAL;
+		return ret;
 	}
 
 	ipmmu_domain_setup_context(domain);
@@ -580,7 +580,7 @@ static void ipmmu_domain_free(struct iommu_domain *io_domain)
 	 * been detached.
 	 */
 	ipmmu_domain_destroy_context(domain);
-	free_io_pgtable_ops(domain->iop);
+	free_io_pgtable_ops(&domain->iop);
 	kfree(domain);
 }
 
@@ -637,8 +637,8 @@ static int ipmmu_map(struct iommu_domain *io_domain, unsigned long iova,
 {
 	struct ipmmu_vmsa_domain *domain = to_vmsa_domain(io_domain);
 
-	return domain->iop->map_pages(domain->iop, iova, paddr, pgsize, pgcount,
-				      prot, gfp, mapped);
+	return iopt_map_pages(&domain->iop, iova, paddr, pgsize, pgcount, prot,
+			      gfp, mapped);
 }
 
 static size_t ipmmu_unmap(struct iommu_domain *io_domain, unsigned long iova,
@@ -647,7 +647,7 @@ static size_t ipmmu_unmap(struct iommu_domain *io_domain, unsigned long iova,
 {
 	struct ipmmu_vmsa_domain *domain = to_vmsa_domain(io_domain);
 
-	return domain->iop->unmap_pages(domain->iop, iova, pgsize, pgcount, gather);
+	return iopt_unmap_pages(&domain->iop, iova, pgsize, pgcount, gather);
 }
 
 static void ipmmu_flush_iotlb_all(struct iommu_domain *io_domain)
@@ -671,7 +671,7 @@ static phys_addr_t ipmmu_iova_to_phys(struct iommu_domain *io_domain,
 
 	/* TODO: Is locking needed ? */
 
-	return domain->iop->iova_to_phys(domain->iop, iova);
+	return iopt_iova_to_phys(&domain->iop, iova);
 }
 
 static int ipmmu_init_platform_device(struct device *dev,

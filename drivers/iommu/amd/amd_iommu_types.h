@@ -516,10 +516,10 @@ struct amd_irte_ops;
 #define AMD_IOMMU_FLAG_TRANS_PRE_ENABLED      (1 << 0)
 
 #define io_pgtable_to_data(x) \
-	container_of((x), struct amd_io_pgtable, iop)
+	container_of((x), struct amd_io_pgtable, iop_params)
 
 #define io_pgtable_ops_to_data(x) \
-	io_pgtable_to_data(io_pgtable_ops_to_pgtable(x))
+	io_pgtable_to_data(io_pgtable_ops_to_params(x))
 
 #define io_pgtable_ops_to_domain(x) \
 	container_of(io_pgtable_ops_to_data(x), \
@@ -529,12 +529,13 @@ struct amd_irte_ops;
 	container_of((x), struct amd_io_pgtable, pgtbl_cfg)
 
 struct amd_io_pgtable {
-	struct io_pgtable_cfg	pgtbl_cfg;
-	struct io_pgtable	iop;
-	int			mode;
-	u64			*root;
-	atomic64_t		pt_root;	/* pgtable root and pgtable mode */
-	u64			*pgd;		/* v2 pgtable pgd pointer */
+	struct io_pgtable_cfg		pgtbl_cfg;
+	struct io_pgtable		iop;
+	struct io_pgtable_params	iop_params;
+	int				mode;
+	u64				*root;
+	atomic64_t			pt_root;	/* pgtable root and pgtable mode */
+	u64				*pgd;		/* v2 pgtable pgd pointer */
 };
 
 /*

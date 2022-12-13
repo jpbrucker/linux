@@ -41,7 +41,7 @@ struct msm_priv {
 	struct list_head list_attached;
 	struct iommu_domain domain;
 	struct io_pgtable_cfg	cfg;
-	struct io_pgtable_ops	*iop;
+	struct io_pgtable	iop;
 	struct device		*dev;
 	spinlock_t		pgtlock; /* pagetable lock */
 };
@@ -339,6 +339,7 @@ static void msm_iommu_domain_free(struct iommu_domain *domain)
 
 static int msm_iommu_domain_config(struct msm_priv *priv)
 {
+	int ret;
 	spin_lock_init(&priv->pgtlock);
 
 	priv->cfg = (struct io_pgtable_cfg) {
@@ -350,10 +351,10 @@ static int msm_iommu_domain_config(struct msm_priv *priv)
 		.iommu_dev = priv->dev,
 	};
 
-	priv->iop = alloc_io_pgtable_ops(&priv->cfg, priv);
-	if (!priv->iop) {
+	ret = alloc_io_pgtable_ops(&priv->iop, &priv->cfg, priv);
+	if (ret) {
 		dev_err(priv->dev, "Failed to allocate pgtable\n");
-		return -EINVAL;
+		return ret;
 	}
 
 	msm_iommu_ops.pgsize_bitmap = priv->cfg.pgsize_bitmap;
@@ -453,7 +454,7 @@ static void msm_iommu_set_platform_dma(struct device *dev)
 	struct msm_iommu_ctx_dev *master;
 	int ret;
 
-	free_io_pgtable_ops(priv->iop);
+	free_io_pgtable_ops(&priv->iop);
 
 	spin_lock_irqsave(&msm_iommu_lock, flags);
 	list_for_each_entry(iommu, &priv->list_attached, dom_node) {
@@ -480,8 +481,8 @@ static int msm_iommu_map(struct iommu_domain *domain, unsigned long iova,
 	int ret;
 
 	spin_lock_irqsave(&priv->pgtlock, flags);
-	ret = priv->iop->map_pages(priv->iop, iova, pa, pgsize, pgcount, prot,
-				   GFP_ATOMIC, mapped);
+	ret = iopt_map_pages(&priv->iop, iova, pa, pgsize, pgcount, prot,
+			     GFP_ATOMIC, mapped);
 	spin_unlock_irqrestore(&priv->pgtlock, flags);
 
 	return ret;
@@ -504,7 +505,7 @@ static size_t msm_iommu_unmap(struct iommu_domain *domain, unsigned long iova,
 	size_t ret;
 
 	spin_lock_irqsave(&priv->pgtlock, flags);
-	ret = priv->iop->unmap_pages(priv->iop, iova, pgsize, pgcount, gather);
+	ret = iopt_unmap_pages(&priv->iop, iova, pgsize, pgcount, gather);
 	spin_unlock_irqrestore(&priv->pgtlock, flags);
 
 	return ret;

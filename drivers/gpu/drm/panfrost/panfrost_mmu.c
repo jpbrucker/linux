@@ -290,7 +290,6 @@ static int mmu_map_sg(struct panfrost_device *pfdev, struct panfrost_mmu *mmu,
 {
 	unsigned int count;
 	struct scatterlist *sgl;
-	struct io_pgtable_ops *ops = mmu->pgtbl_ops;
 	u64 start_iova = iova;
 
 	for_each_sgtable_dma_sg(sgt, sgl, count) {
@@ -303,8 +302,8 @@ static int mmu_map_sg(struct panfrost_device *pfdev, struct panfrost_mmu *mmu,
 			size_t pgcount, mapped = 0;
 			size_t pgsize = get_pgsize(iova | paddr, len, &pgcount);
 
-			ops->map_pages(ops, iova, paddr, pgsize, pgcount, prot,
-				       GFP_KERNEL, &mapped);
+			iopt_map_pages(&mmu->pgtbl, iova, paddr, pgsize,
+				       pgcount, prot, GFP_KERNEL, &mapped);
 			/* Don't get stuck if things have gone wrong */
 			mapped = max(mapped, pgsize);
 			iova += mapped;
@@ -349,7 +348,7 @@ void panfrost_mmu_unmap(struct panfrost_gem_mapping *mapping)
 	struct panfrost_gem_object *bo = mapping->obj;
 	struct drm_gem_object *obj = &bo->base.base;
 	struct panfrost_device *pfdev = to_panfrost_device(obj->dev);
-	struct io_pgtable_ops *ops = mapping->mmu->pgtbl_ops;
+	struct io_pgtable *iop = &mapping->mmu->pgtbl;
 	u64 iova = mapping->mmnode.start << PAGE_SHIFT;
 	size_t len = mapping->mmnode.size << PAGE_SHIFT;
 	size_t unmapped_len = 0;
@@ -366,8 +365,8 @@ void panfrost_mmu_unmap(struct panfrost_gem_mapping *mapping)
 
 		if (bo->is_heap)
 			pgcount = 1;
-		if (!bo->is_heap || ops->iova_to_phys(ops, iova)) {
-			unmapped_page = ops->unmap_pages(ops, iova, pgsize, pgcount, NULL);
+		if (!bo->is_heap || iopt_iova_to_phys(iop, iova)) {
+			unmapped_page = iopt_unmap_pages(iop, iova, pgsize, pgcount, NULL);
 			WARN_ON(unmapped_page != pgsize * pgcount);
 		}
 		iova += pgsize * pgcount;
@@ -560,7 +559,7 @@ static void panfrost_mmu_release_ctx(struct kref *kref)
 	}
 	spin_unlock(&pfdev->as_lock);
 
-	free_io_pgtable_ops(mmu->pgtbl_ops);
+	free_io_pgtable_ops(&mmu->pgtbl);
 	drm_mm_takedown(&mmu->mm);
 	kfree(mmu);
 }
@@ -605,6 +604,7 @@ static void panfrost_drm_mm_color_adjust(const struct drm_mm_node *node,
 
 struct panfrost_mmu *panfrost_mmu_ctx_create(struct panfrost_device *pfdev)
 {
+	int ret;
 	struct panfrost_mmu *mmu;
 
 	mmu = kzalloc(sizeof(*mmu), GFP_KERNEL);
@@ -631,10 +631,10 @@ struct panfrost_mmu *panfrost_mmu_ctx_create(struct panfrost_device *pfdev)
 		.iommu_dev	= pfdev->dev,
 	};
 
-	mmu->pgtbl_ops = alloc_io_pgtable_ops(&mmu->pgtbl_cfg, mmu);
-	if (!mmu->pgtbl_ops) {
+	ret = alloc_io_pgtable_ops(&mmu->pgtbl, &mmu->pgtbl_cfg, mmu);
+	if (ret) {
 		kfree(mmu);
-		return ERR_PTR(-EINVAL);
+		return ERR_PTR(ret);
 	}
 
 	kref_init(&mmu->refcount);
