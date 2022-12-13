@@ -40,7 +40,7 @@
 	container_of((x), struct arm_v7s_io_pgtable, iop)
 
 #define io_pgtable_ops_to_data(x)					\
-	io_pgtable_to_data(io_pgtable_ops_to_pgtable(x))
+	io_pgtable_to_data(io_pgtable_ops_to_params(x))
 
 /*
  * We have 32 bits total; 12 bits resolved at level 1, 8 bits at level 2,
@@ -162,11 +162,10 @@ typedef u32 arm_v7s_iopte;
 static bool selftest_running;
 
 struct arm_v7s_io_pgtable {
-	struct io_pgtable	iop;
+	struct io_pgtable_params	iop;
 
-	arm_v7s_iopte		*pgd;
-	struct kmem_cache	*l2_tables;
-	spinlock_t		split_lock;
+	struct kmem_cache		*l2_tables;
+	spinlock_t			split_lock;
 };
 
 static bool arm_v7s_pte_is_cont(arm_v7s_iopte pte, int lvl);
@@ -424,13 +423,14 @@ static bool arm_v7s_pte_is_cont(arm_v7s_iopte pte, int lvl)
 	return false;
 }
 
-static size_t __arm_v7s_unmap(struct arm_v7s_io_pgtable *,
+static size_t __arm_v7s_unmap(struct io_pgtable *, struct arm_v7s_io_pgtable *,
 			      struct iommu_iotlb_gather *, unsigned long,
 			      size_t, int, arm_v7s_iopte *);
 
-static int arm_v7s_init_pte(struct arm_v7s_io_pgtable *data,
-			    unsigned long iova, phys_addr_t paddr, int prot,
-			    int lvl, int num_entries, arm_v7s_iopte *ptep)
+static int arm_v7s_init_pte(struct io_pgtable *iop,
+			    struct arm_v7s_io_pgtable *data, unsigned long iova,
+			    phys_addr_t paddr, int prot, int lvl,
+			    int num_entries, arm_v7s_iopte *ptep)
 {
 	struct io_pgtable_cfg *cfg = &data->iop.cfg;
 	arm_v7s_iopte pte;
@@ -446,7 +446,7 @@ static int arm_v7s_init_pte(struct arm_v7s_io_pgtable *data,
 			size_t sz = ARM_V7S_BLOCK_SIZE(lvl);
 
 			tblp = ptep - ARM_V7S_LVL_IDX(iova, lvl, cfg);
-			if (WARN_ON(__arm_v7s_unmap(data, NULL, iova + i * sz,
+			if (WARN_ON(__arm_v7s_unmap(iop, data, NULL, iova + i * sz,
 						    sz, lvl, tblp) != sz))
 				return -EINVAL;
 		} else if (ptep[i]) {
@@ -494,9 +494,9 @@ static arm_v7s_iopte arm_v7s_install_table(arm_v7s_iopte *table,
 	return old;
 }
 
-static int __arm_v7s_map(struct arm_v7s_io_pgtable *data, unsigned long iova,
-			 phys_addr_t paddr, size_t size, int prot,
-			 int lvl, arm_v7s_iopte *ptep, gfp_t gfp)
+static int __arm_v7s_map(struct io_pgtable *iop, struct arm_v7s_io_pgtable *data,
+			 unsigned long iova, phys_addr_t paddr, size_t size,
+			 int prot, int lvl, arm_v7s_iopte *ptep, gfp_t gfp)
 {
 	struct io_pgtable_cfg *cfg = &data->iop.cfg;
 	arm_v7s_iopte pte, *cptep;
@@ -507,7 +507,7 @@ static int __arm_v7s_map(struct arm_v7s_io_pgtable *data, unsigned long iova,
 
 	/* If we can install a leaf entry at this level, then do so */
 	if (num_entries)
-		return arm_v7s_init_pte(data, iova, paddr, prot,
+		return arm_v7s_init_pte(iop, data, iova, paddr, prot,
 					lvl, num_entries, ptep);
 
 	/* We can't allocate tables at the final level */
@@ -538,14 +538,14 @@ static int __arm_v7s_map(struct arm_v7s_io_pgtable *data, unsigned long iova,
 	}
 
 	/* Rinse, repeat */
-	return __arm_v7s_map(data, iova, paddr, size, prot, lvl + 1, cptep, gfp);
+	return __arm_v7s_map(iop, data, iova, paddr, size, prot, lvl + 1, cptep, gfp);
 }
 
-static int arm_v7s_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
+static int arm_v7s_map_pages(struct io_pgtable *iop, unsigned long iova,
 			     phys_addr_t paddr, size_t pgsize, size_t pgcount,
 			     int prot, gfp_t gfp, size_t *mapped)
 {
-	struct arm_v7s_io_pgtable *data = io_pgtable_ops_to_data(ops);
+	struct arm_v7s_io_pgtable *data = io_pgtable_ops_to_data(iop->ops);
 	int ret = -EINVAL;
 
 	if (WARN_ON(iova >= (1ULL << data->iop.cfg.ias) ||
@@ -557,8 +557,8 @@ static int arm_v7s_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 		return 0;
 
 	while (pgcount--) {
-		ret = __arm_v7s_map(data, iova, paddr, pgsize, prot, 1, data->pgd,
-				    gfp);
+		ret = __arm_v7s_map(iop, data, iova, paddr, pgsize, prot, 1,
+				    iop->pgd, gfp);
 		if (ret)
 			break;
 
@@ -577,26 +577,26 @@ static int arm_v7s_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 
 static void arm_v7s_free_pgtable(struct io_pgtable *iop)
 {
-	struct arm_v7s_io_pgtable *data = io_pgtable_to_data(iop);
+	struct arm_v7s_io_pgtable *data = io_pgtable_ops_to_data(iop->ops);
+	arm_v7s_iopte *ptep = iop->pgd;
 	int i;
 
-	for (i = 0; i < ARM_V7S_PTES_PER_LVL(1, &data->iop.cfg); i++) {
-		arm_v7s_iopte pte = data->pgd[i];
-
-		if (ARM_V7S_PTE_IS_TABLE(pte, 1))
-			__arm_v7s_free_table(iopte_deref(pte, 1, data),
+	for (i = 0; i < ARM_V7S_PTES_PER_LVL(1, &data->iop.cfg); i++, ptep++) {
+		if (ARM_V7S_PTE_IS_TABLE(*ptep, 1))
+			__arm_v7s_free_table(iopte_deref(*ptep, 1, data),
 					     2, data);
 	}
-	__arm_v7s_free_table(data->pgd, 1, data);
+	__arm_v7s_free_table(iop->pgd, 1, data);
 	kmem_cache_destroy(data->l2_tables);
 	kfree(data);
 }
 
-static arm_v7s_iopte arm_v7s_split_cont(struct arm_v7s_io_pgtable *data,
+static arm_v7s_iopte arm_v7s_split_cont(struct io_pgtable *iop,
+					struct arm_v7s_io_pgtable *data,
 					unsigned long iova, int idx, int lvl,
 					arm_v7s_iopte *ptep)
 {
-	struct io_pgtable *iop = &data->iop;
+	struct io_pgtable_cfg *cfg = &data->iop.cfg;
 	arm_v7s_iopte pte;
 	size_t size = ARM_V7S_BLOCK_SIZE(lvl);
 	int i;
@@ -611,14 +611,15 @@ static arm_v7s_iopte arm_v7s_split_cont(struct arm_v7s_io_pgtable *data,
 	for (i = 0; i < ARM_V7S_CONT_PAGES; i++)
 		ptep[i] = pte + i * size;
 
-	__arm_v7s_pte_sync(ptep, ARM_V7S_CONT_PAGES, &iop->cfg);
+	__arm_v7s_pte_sync(ptep, ARM_V7S_CONT_PAGES, cfg);
 
 	size *= ARM_V7S_CONT_PAGES;
-	io_pgtable_tlb_flush_walk(iop, iova, size, size);
+	io_pgtable_tlb_flush_walk(cfg, iop, iova, size, size);
 	return pte;
 }
 
-static size_t arm_v7s_split_blk_unmap(struct arm_v7s_io_pgtable *data,
+static size_t arm_v7s_split_blk_unmap(struct io_pgtable *iop,
+				      struct arm_v7s_io_pgtable *data,
 				      struct iommu_iotlb_gather *gather,
 				      unsigned long iova, size_t size,
 				      arm_v7s_iopte blk_pte,
@@ -656,27 +657,28 @@ static size_t arm_v7s_split_blk_unmap(struct arm_v7s_io_pgtable *data,
 			return 0;
 
 		tablep = iopte_deref(pte, 1, data);
-		return __arm_v7s_unmap(data, gather, iova, size, 2, tablep);
+		return __arm_v7s_unmap(iop, data, gather, iova, size, 2, tablep);
 	}
 
-	io_pgtable_tlb_add_page(&data->iop, gather, iova, size);
+	io_pgtable_tlb_add_page(cfg, iop, gather, iova, size);
 	return size;
 }
 
-static size_t __arm_v7s_unmap(struct arm_v7s_io_pgtable *data,
+static size_t __arm_v7s_unmap(struct io_pgtable *iop,
+			      struct arm_v7s_io_pgtable *data,
 			      struct iommu_iotlb_gather *gather,
 			      unsigned long iova, size_t size, int lvl,
 			      arm_v7s_iopte *ptep)
 {
 	arm_v7s_iopte pte[ARM_V7S_CONT_PAGES];
-	struct io_pgtable *iop = &data->iop;
+	struct io_pgtable_cfg *cfg = &data->iop.cfg;
 	int idx, i = 0, num_entries = size >> ARM_V7S_LVL_SHIFT(lvl);
 
 	/* Something went horribly wrong and we ran out of page table */
 	if (WARN_ON(lvl > 2))
 		return 0;
 
-	idx = ARM_V7S_LVL_IDX(iova, lvl, &iop->cfg);
+	idx = ARM_V7S_LVL_IDX(iova, lvl, cfg);
 	ptep += idx;
 	do {
 		pte[i] = READ_ONCE(ptep[i]);
@@ -698,7 +700,7 @@ static size_t __arm_v7s_unmap(struct arm_v7s_io_pgtable *data,
 		unsigned long flags;
 
 		spin_lock_irqsave(&data->split_lock, flags);
-		pte[0] = arm_v7s_split_cont(data, iova, idx, lvl, ptep);
+		pte[0] = arm_v7s_split_cont(iop, data, iova, idx, lvl, ptep);
 		spin_unlock_irqrestore(&data->split_lock, flags);
 	}
 
@@ -706,17 +708,18 @@ static size_t __arm_v7s_unmap(struct arm_v7s_io_pgtable *data,
 	if (num_entries) {
 		size_t blk_size = ARM_V7S_BLOCK_SIZE(lvl);
 
-		__arm_v7s_set_pte(ptep, 0, num_entries, &iop->cfg);
+		__arm_v7s_set_pte(ptep, 0, num_entries, cfg);
 
 		for (i = 0; i < num_entries; i++) {
 			if (ARM_V7S_PTE_IS_TABLE(pte[i], lvl)) {
 				/* Also flush any partial walks */
-				io_pgtable_tlb_flush_walk(iop, iova, blk_size,
+				io_pgtable_tlb_flush_walk(cfg, iop, iova, blk_size,
 						ARM_V7S_BLOCK_SIZE(lvl + 1));
 				ptep = iopte_deref(pte[i], lvl, data);
 				__arm_v7s_free_table(ptep, lvl + 1, data);
 			} else if (!iommu_iotlb_gather_queued(gather)) {
-				io_pgtable_tlb_add_page(iop, gather, iova, blk_size);
+				io_pgtable_tlb_add_page(cfg, iop, gather, iova,
+							blk_size);
 			}
 			iova += blk_size;
 		}
@@ -726,27 +729,27 @@ static size_t __arm_v7s_unmap(struct arm_v7s_io_pgtable *data,
 		 * Insert a table at the next level to map the old region,
 		 * minus the part we want to unmap
 		 */
-		return arm_v7s_split_blk_unmap(data, gather, iova, size, pte[0],
-					       ptep);
+		return arm_v7s_split_blk_unmap(iop, data, gather, iova, size,
+					       pte[0], ptep);
 	}
 
 	/* Keep on walkin' */
 	ptep = iopte_deref(pte[0], lvl, data);
-	return __arm_v7s_unmap(data, gather, iova, size, lvl + 1, ptep);
+	return __arm_v7s_unmap(iop, data, gather, iova, size, lvl + 1, ptep);
 }
 
-static size_t arm_v7s_unmap_pages(struct io_pgtable_ops *ops, unsigned long iova,
+static size_t arm_v7s_unmap_pages(struct io_pgtable *iop, unsigned long iova,
 				  size_t pgsize, size_t pgcount,
 				  struct iommu_iotlb_gather *gather)
 {
-	struct arm_v7s_io_pgtable *data = io_pgtable_ops_to_data(ops);
+	struct arm_v7s_io_pgtable *data = io_pgtable_ops_to_data(iop->ops);
 	size_t unmapped = 0, ret;
 
 	if (WARN_ON(iova >= (1ULL << data->iop.cfg.ias)))
 		return 0;
 
 	while (pgcount--) {
-		ret = __arm_v7s_unmap(data, gather, iova, pgsize, 1, data->pgd);
+		ret = __arm_v7s_unmap(iop, data, gather, iova, pgsize, 1, iop->pgd);
 		if (!ret)
 			break;
 
@@ -757,11 +760,11 @@ static size_t arm_v7s_unmap_pages(struct io_pgtable_ops *ops, unsigned long iova
 	return unmapped;
 }
 
-static phys_addr_t arm_v7s_iova_to_phys(struct io_pgtable_ops *ops,
+static phys_addr_t arm_v7s_iova_to_phys(struct io_pgtable *iop,
 					unsigned long iova)
 {
-	struct arm_v7s_io_pgtable *data = io_pgtable_ops_to_data(ops);
-	arm_v7s_iopte *ptep = data->pgd, pte;
+	struct arm_v7s_io_pgtable *data = io_pgtable_ops_to_data(iop->ops);
+	arm_v7s_iopte *ptep = iop->pgd, pte;
 	int lvl = 0;
 	u32 mask;
 
@@ -780,37 +783,37 @@ static phys_addr_t arm_v7s_iova_to_phys(struct io_pgtable_ops *ops,
 	return iopte_to_paddr(pte, lvl, &data->iop.cfg) | (iova & ~mask);
 }
 
-static struct io_pgtable *arm_v7s_alloc_pgtable(struct io_pgtable_cfg *cfg,
-						void *cookie)
+static int arm_v7s_alloc_pgtable(struct io_pgtable *iop,
+				 struct io_pgtable_cfg *cfg, void *cookie)
 {
 	struct arm_v7s_io_pgtable *data;
 	slab_flags_t slab_flag;
 	phys_addr_t paddr;
 
 	if (cfg->ias > (arm_v7s_is_mtk_enabled(cfg) ? 34 : ARM_V7S_ADDR_BITS))
-		return NULL;
+		return -EINVAL;
 
 	if (cfg->oas > (arm_v7s_is_mtk_enabled(cfg) ? 35 : ARM_V7S_ADDR_BITS))
-		return NULL;
+		return -EINVAL;
 
 	if (cfg->quirks & ~(IO_PGTABLE_QUIRK_ARM_NS |
 			    IO_PGTABLE_QUIRK_NO_PERMS |
 			    IO_PGTABLE_QUIRK_ARM_MTK_EXT |
 			    IO_PGTABLE_QUIRK_ARM_MTK_TTBR_EXT))
-		return NULL;
+		return -EINVAL;
 
 	/* If ARM_MTK_4GB is enabled, the NO_PERMS is also expected. */
 	if (cfg->quirks & IO_PGTABLE_QUIRK_ARM_MTK_EXT &&
 	    !(cfg->quirks & IO_PGTABLE_QUIRK_NO_PERMS))
-			return NULL;
+		return -EINVAL;
 
 	if ((cfg->quirks & IO_PGTABLE_QUIRK_ARM_MTK_TTBR_EXT) &&
 	    !arm_v7s_is_mtk_enabled(cfg))
-		return NULL;
+		return -EINVAL;
 
 	data = kmalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
-		return NULL;
+		return -ENOMEM;
 
 	spin_lock_init(&data->split_lock);
 
@@ -860,15 +863,15 @@ static struct io_pgtable *arm_v7s_alloc_pgtable(struct io_pgtable_cfg *cfg,
 				ARM_V7S_NMRR_OR(7, ARM_V7S_RGN_WBWA);
 
 	/* Looking good; allocate a pgd */
-	data->pgd = __arm_v7s_alloc_table(1, GFP_KERNEL, data);
-	if (!data->pgd)
+	iop->pgd = __arm_v7s_alloc_table(1, GFP_KERNEL, data);
+	if (!iop->pgd)
 		goto out_free_data;
 
 	/* Ensure the empty pgd is visible before any actual TTBR write */
 	wmb();
 
 	/* TTBR */
-	paddr = virt_to_phys(data->pgd);
+	paddr = virt_to_phys(iop->pgd);
 	if (arm_v7s_is_mtk_enabled(cfg))
 		cfg->arm_v7s_cfg.ttbr = paddr | upper_32_bits(paddr);
 	else
@@ -878,12 +881,13 @@ static struct io_pgtable *arm_v7s_alloc_pgtable(struct io_pgtable_cfg *cfg,
 					 ARM_V7S_TTBR_ORGN_ATTR(ARM_V7S_RGN_WBWA)) :
 					(ARM_V7S_TTBR_IRGN_ATTR(ARM_V7S_RGN_NC) |
 					 ARM_V7S_TTBR_ORGN_ATTR(ARM_V7S_RGN_NC)));
-	return &data->iop;
+	iop->ops = &data->iop.ops;
+	return 0;
 
 out_free_data:
 	kmem_cache_destroy(data->l2_tables);
 	kfree(data);
-	return NULL;
+	return -EINVAL;
 }
 
 struct io_pgtable_init_fns io_pgtable_arm_v7s_init_fns = {
@@ -920,7 +924,7 @@ static const struct iommu_flush_ops dummy_tlb_ops __initconst = {
 	.tlb_add_page	= dummy_tlb_add_page,
 };
 
-#define __FAIL(ops)	({				\
+#define __FAIL()	({				\
 		WARN(1, "selftest: test failed\n");	\
 		selftest_running = false;		\
 		-EFAULT;				\
@@ -928,7 +932,7 @@ static const struct iommu_flush_ops dummy_tlb_ops __initconst = {
 
 static int __init arm_v7s_do_selftests(void)
 {
-	struct io_pgtable_ops *ops;
+	struct io_pgtable iop;
 	struct io_pgtable_cfg cfg = {
 		.fmt = ARM_V7S,
 		.tlb = &dummy_tlb_ops,
@@ -946,8 +950,7 @@ static int __init arm_v7s_do_selftests(void)
 
 	cfg_cookie = &cfg;
 
-	ops = alloc_io_pgtable_ops(&cfg, &cfg);
-	if (!ops) {
+	if (alloc_io_pgtable_ops(&iop, &cfg, &cfg)) {
 		pr_err("selftest: failed to allocate io pgtable ops\n");
 		return -EINVAL;
 	}
@@ -956,14 +959,14 @@ static int __init arm_v7s_do_selftests(void)
 	 * Initial sanity checks.
 	 * Empty page tables shouldn't provide any translations.
 	 */
-	if (ops->iova_to_phys(ops, 42))
-		return __FAIL(ops);
+	if (iopt_iova_to_phys(&iop, 42))
+		return __FAIL();
 
-	if (ops->iova_to_phys(ops, SZ_1G + 42))
-		return __FAIL(ops);
+	if (iopt_iova_to_phys(&iop, SZ_1G + 42))
+		return __FAIL();
 
-	if (ops->iova_to_phys(ops, SZ_2G + 42))
-		return __FAIL(ops);
+	if (iopt_iova_to_phys(&iop, SZ_2G + 42))
+		return __FAIL();
 
 	/*
 	 * Distinct mappings of different granule sizes.
@@ -971,20 +974,20 @@ static int __init arm_v7s_do_selftests(void)
 	iova = 0;
 	for_each_set_bit(i, &cfg.pgsize_bitmap, BITS_PER_LONG) {
 		size = 1UL << i;
-		if (ops->map_pages(ops, iova, iova, size, 1,
+		if (iopt_map_pages(&iop, iova, iova, size, 1,
 				   IOMMU_READ | IOMMU_WRITE |
 				   IOMMU_NOEXEC | IOMMU_CACHE,
 				   GFP_KERNEL, &mapped))
-			return __FAIL(ops);
+			return __FAIL();
 
 		/* Overlapping mappings */
-		if (!ops->map_pages(ops, iova, iova + size, size, 1,
+		if (!iopt_map_pages(&iop, iova, iova + size, size, 1,
 				    IOMMU_READ | IOMMU_NOEXEC, GFP_KERNEL,
 				    &mapped))
-			return __FAIL(ops);
+			return __FAIL();
 
-		if (ops->iova_to_phys(ops, iova + 42) != (iova + 42))
-			return __FAIL(ops);
+		if (iopt_iova_to_phys(&iop, iova + 42) != (iova + 42))
+			return __FAIL();
 
 		iova += SZ_16M;
 		loopnr++;
@@ -995,17 +998,17 @@ static int __init arm_v7s_do_selftests(void)
 	size = 1UL << __ffs(cfg.pgsize_bitmap);
 	while (i < loopnr) {
 		iova_start = i * SZ_16M;
-		if (ops->unmap_pages(ops, iova_start + size, size, 1, NULL) != size)
-			return __FAIL(ops);
+		if (iopt_unmap_pages(&iop, iova_start + size, size, 1, NULL) != size)
+			return __FAIL();
 
 		/* Remap of partial unmap */
-		if (ops->map_pages(ops, iova_start + size, size, size, 1,
+		if (iopt_map_pages(&iop, iova_start + size, size, size, 1,
 				   IOMMU_READ, GFP_KERNEL, &mapped))
-			return __FAIL(ops);
+			return __FAIL();
 
-		if (ops->iova_to_phys(ops, iova_start + size + 42)
+		if (iopt_iova_to_phys(&iop, iova_start + size + 42)
 		    != (size + 42))
-			return __FAIL(ops);
+			return __FAIL();
 		i++;
 	}
 
@@ -1014,24 +1017,24 @@ static int __init arm_v7s_do_selftests(void)
 	for_each_set_bit(i, &cfg.pgsize_bitmap, BITS_PER_LONG) {
 		size = 1UL << i;
 
-		if (ops->unmap_pages(ops, iova, size, 1, NULL) != size)
-			return __FAIL(ops);
+		if (iopt_unmap_pages(&iop, iova, size, 1, NULL) != size)
+			return __FAIL();
 
-		if (ops->iova_to_phys(ops, iova + 42))
-			return __FAIL(ops);
+		if (iopt_iova_to_phys(&iop, iova + 42))
+			return __FAIL();
 
 		/* Remap full block */
-		if (ops->map_pages(ops, iova, iova, size, 1, IOMMU_WRITE,
+		if (iopt_map_pages(&iop, iova, iova, size, 1, IOMMU_WRITE,
 				   GFP_KERNEL, &mapped))
-			return __FAIL(ops);
+			return __FAIL();
 
-		if (ops->iova_to_phys(ops, iova + 42) != (iova + 42))
-			return __FAIL(ops);
+		if (iopt_iova_to_phys(&iop, iova + 42) != (iova + 42))
+			return __FAIL();
 
 		iova += SZ_16M;
 	}
 
-	free_io_pgtable_ops(ops);
+	free_io_pgtable_ops(&iop);
 
 	selftest_running = false;
 

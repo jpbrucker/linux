@@ -20,7 +20,7 @@ struct msm_iommu {
 struct msm_iommu_pagetable {
 	struct msm_mmu base;
 	struct msm_mmu *parent;
-	struct io_pgtable_ops *pgtbl_ops;
+	struct io_pgtable pgtbl;
 	unsigned long pgsize_bitmap;	/* Bitmap of page sizes in use */
 	phys_addr_t ttbr;
 	u32 asid;
@@ -90,14 +90,14 @@ static int msm_iommu_pagetable_unmap(struct msm_mmu *mmu, u64 iova,
 		size_t size)
 {
 	struct msm_iommu_pagetable *pagetable = to_pagetable(mmu);
-	struct io_pgtable_ops *ops = pagetable->pgtbl_ops;
 
 	while (size) {
 		size_t unmapped, pgsize, count;
 
 		pgsize = calc_pgsize(pagetable, iova, iova, size, &count);
 
-		unmapped = ops->unmap_pages(ops, iova, pgsize, count, NULL);
+		unmapped = iopt_unmap_pages(&pagetable->pgtbl, iova, pgsize,
+					    count, NULL);
 		if (!unmapped)
 			break;
 
@@ -114,7 +114,7 @@ static int msm_iommu_pagetable_map(struct msm_mmu *mmu, u64 iova,
 		struct sg_table *sgt, size_t len, int prot)
 {
 	struct msm_iommu_pagetable *pagetable = to_pagetable(mmu);
-	struct io_pgtable_ops *ops = pagetable->pgtbl_ops;
+	struct io_pgtable *iop = &pagetable->pgtbl;
 	struct scatterlist *sg;
 	u64 addr = iova;
 	unsigned int i;
@@ -129,7 +129,7 @@ static int msm_iommu_pagetable_map(struct msm_mmu *mmu, u64 iova,
 
 			pgsize = calc_pgsize(pagetable, addr, phys, size, &count);
 
-			ret = ops->map_pages(ops, addr, phys, pgsize, count,
+			ret = iopt_map_pages(iop, addr, phys, pgsize, count,
 					     prot, GFP_KERNEL, &mapped);
 
 			/* map_pages could fail after mapping some of the pages,
@@ -163,7 +163,7 @@ static void msm_iommu_pagetable_destroy(struct msm_mmu *mmu)
 	if (atomic_dec_return(&iommu->pagetables) == 0)
 		adreno_smmu->set_ttbr0_cfg(adreno_smmu->cookie, NULL);
 
-	free_io_pgtable_ops(pagetable->pgtbl_ops);
+	free_io_pgtable_ops(&pagetable->pgtbl);
 	kfree(pagetable);
 }
 
@@ -258,11 +258,10 @@ struct msm_mmu *msm_iommu_pagetable_create(struct msm_mmu *parent)
 	ttbr0_cfg.quirks &= ~IO_PGTABLE_QUIRK_ARM_TTBR1;
 	ttbr0_cfg.tlb = &null_tlb_ops;
 
-	pagetable->pgtbl_ops = alloc_io_pgtable_ops(&ttbr0_cfg, iommu->domain);
-
-	if (!pagetable->pgtbl_ops) {
+	ret = alloc_io_pgtable_ops(&pagetable->pgtbl, &ttbr0_cfg, iommu->domain);
+	if (ret) {
 		kfree(pagetable);
-		return ERR_PTR(-ENOMEM);
+		return ERR_PTR(ret);
 	}
 
 	/*
@@ -275,7 +274,7 @@ struct msm_mmu *msm_iommu_pagetable_create(struct msm_mmu *parent)
 
 		ret = adreno_smmu->set_ttbr0_cfg(adreno_smmu->cookie, &ttbr0_cfg);
 		if (ret) {
-			free_io_pgtable_ops(pagetable->pgtbl_ops);
+			free_io_pgtable_ops(&pagetable->pgtbl);
 			kfree(pagetable);
 			return ERR_PTR(ret);
 		}
