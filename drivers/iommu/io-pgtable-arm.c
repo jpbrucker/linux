@@ -82,40 +82,40 @@ void __arm_lpae_sync_pte(arm_lpae_iopte *ptep, int num_entries,
 
 static void arm_lpae_free_pgtable(struct io_pgtable *iop)
 {
-	struct arm_lpae_io_pgtable *data = io_pgtable_to_data(iop);
+	struct arm_lpae_io_pgtable *data = io_pgtable_ops_to_data(iop->ops);
 
-	__arm_lpae_free_pgtable(data, data->start_level, data->pgd);
+	__arm_lpae_free_pgtable(data, data->start_level, iop->pgd);
 	kfree(data);
 }
 
-static struct io_pgtable *
-arm_64_lpae_alloc_pgtable_s1(struct io_pgtable_cfg *cfg, void *cookie)
+int arm_64_lpae_alloc_pgtable_s1(struct io_pgtable *iop,
+				 struct io_pgtable_cfg *cfg, void *cookie)
 {
 	struct arm_lpae_io_pgtable *data;
 
 	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
-		return NULL;
+		return -ENOMEM;
 
 	if (arm_lpae_init_pgtable_s1(cfg, data))
 		goto out_free_data;
 
 	/* Looking good; allocate a pgd */
-	data->pgd = __arm_lpae_alloc_pages(ARM_LPAE_PGD_SIZE(data),
-					   GFP_KERNEL, cfg);
-	if (!data->pgd)
+	iop->pgd = __arm_lpae_alloc_pages(ARM_LPAE_PGD_SIZE(data),
+					  GFP_KERNEL, cfg);
+	if (!iop->pgd)
 		goto out_free_data;
 
 	/* Ensure the empty pgd is visible before any actual TTBR write */
 	wmb();
 
-	/* TTBR */
-	cfg->arm_lpae_s1_cfg.ttbr = virt_to_phys(data->pgd);
-	return &data->iop;
+	cfg->arm_lpae_s1_cfg.ttbr = virt_to_phys(iop->pgd);
+	iop->ops = &data->iop.ops;
+	return 0;
 
 out_free_data:
 	kfree(data);
-	return NULL;
+	return -EINVAL;
 }
 
 static int arm_64_lpae_configure_s1(struct io_pgtable_cfg *cfg, size_t *pgd_size)
@@ -130,34 +130,35 @@ static int arm_64_lpae_configure_s1(struct io_pgtable_cfg *cfg, size_t *pgd_size
 	return 0;
 }
 
-static struct io_pgtable *
-arm_64_lpae_alloc_pgtable_s2(struct io_pgtable_cfg *cfg, void *cookie)
+int arm_64_lpae_alloc_pgtable_s2(struct io_pgtable *iop,
+				 struct io_pgtable_cfg *cfg, void *cookie)
 {
 	struct arm_lpae_io_pgtable *data;
 
 	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
-		return NULL;
+		return -ENOMEM;
 
 	if (arm_lpae_init_pgtable_s2(cfg, data))
 		goto out_free_data;
 
 	/* Allocate pgd pages */
-	data->pgd = __arm_lpae_alloc_pages(ARM_LPAE_PGD_SIZE(data),
-					   GFP_KERNEL, cfg);
-	if (!data->pgd)
+	iop->pgd = __arm_lpae_alloc_pages(ARM_LPAE_PGD_SIZE(data),
+					  GFP_KERNEL, cfg);
+	if (!iop->pgd)
 		goto out_free_data;
 
 	/* Ensure the empty pgd is visible before any actual TTBR write */
 	wmb();
 
 	/* VTTBR */
-	cfg->arm_lpae_s2_cfg.vttbr = virt_to_phys(data->pgd);
-	return &data->iop;
+	cfg->arm_lpae_s2_cfg.vttbr = virt_to_phys(iop->pgd);
+	iop->ops = &data->iop.ops;
+	return 0;
 
 out_free_data:
 	kfree(data);
-	return NULL;
+	return -EINVAL;
 }
 
 static int arm_64_lpae_configure_s2(struct io_pgtable_cfg *cfg, size_t *pgd_size)
@@ -172,46 +173,46 @@ static int arm_64_lpae_configure_s2(struct io_pgtable_cfg *cfg, size_t *pgd_size
 	return 0;
 }
 
-static struct io_pgtable *
-arm_32_lpae_alloc_pgtable_s1(struct io_pgtable_cfg *cfg, void *cookie)
+int arm_32_lpae_alloc_pgtable_s1(struct io_pgtable *iop,
+				 struct io_pgtable_cfg *cfg, void *cookie)
 {
 	if (cfg->ias > 32 || cfg->oas > 40)
-		return NULL;
+		return -EINVAL;
 
 	cfg->pgsize_bitmap &= (SZ_4K | SZ_2M | SZ_1G);
-	return arm_64_lpae_alloc_pgtable_s1(cfg, cookie);
+	return arm_64_lpae_alloc_pgtable_s1(iop, cfg, cookie);
 }
 
-static struct io_pgtable *
-arm_32_lpae_alloc_pgtable_s2(struct io_pgtable_cfg *cfg, void *cookie)
+int arm_32_lpae_alloc_pgtable_s2(struct io_pgtable *iop,
+				 struct io_pgtable_cfg *cfg, void *cookie)
 {
 	if (cfg->ias > 40 || cfg->oas > 40)
-		return NULL;
+		return -EINVAL;
 
 	cfg->pgsize_bitmap &= (SZ_4K | SZ_2M | SZ_1G);
-	return arm_64_lpae_alloc_pgtable_s2(cfg, cookie);
+	return arm_64_lpae_alloc_pgtable_s2(iop, cfg, cookie);
 }
 
-static struct io_pgtable *
-arm_mali_lpae_alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
+int arm_mali_lpae_alloc_pgtable(struct io_pgtable *iop,
+				struct io_pgtable_cfg *cfg, void *cookie)
 {
 	struct arm_lpae_io_pgtable *data;
 
 	/* No quirks for Mali (hopefully) */
 	if (cfg->quirks)
-		return NULL;
+		return -EINVAL;
 
 	if (cfg->ias > 48 || cfg->oas > 40)
-		return NULL;
+		return -EINVAL;
 
 	cfg->pgsize_bitmap &= (SZ_4K | SZ_2M | SZ_1G);
 
 	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
-		return NULL;
+		return -ENOMEM;
 
 	if (arm_lpae_init_pgtable(cfg, data))
-		return NULL;
+		goto out_free_data;
 
 	/* Mali seems to need a full 4-level table regardless of IAS */
 	if (data->start_level > 0) {
@@ -233,25 +234,26 @@ arm_mali_lpae_alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
 		(ARM_MALI_LPAE_MEMATTR_IMP_DEF
 		 << ARM_LPAE_MAIR_ATTR_SHIFT(ARM_LPAE_MAIR_ATTR_IDX_DEV));
 
-	data->pgd = __arm_lpae_alloc_pages(ARM_LPAE_PGD_SIZE(data), GFP_KERNEL,
-					   cfg);
-	if (!data->pgd)
+	iop->pgd = __arm_lpae_alloc_pages(ARM_LPAE_PGD_SIZE(data), GFP_KERNEL,
+					  cfg);
+	if (!iop->pgd)
 		goto out_free_data;
 
 	/* Ensure the empty pgd is visible before TRANSTAB can be written */
 	wmb();
 
-	cfg->arm_mali_lpae_cfg.transtab = virt_to_phys(data->pgd) |
+	cfg->arm_mali_lpae_cfg.transtab = virt_to_phys(iop->pgd) |
 					  ARM_MALI_LPAE_TTBR_READ_INNER |
 					  ARM_MALI_LPAE_TTBR_ADRMODE_TABLE;
 	if (cfg->coherent_walk)
 		cfg->arm_mali_lpae_cfg.transtab |= ARM_MALI_LPAE_TTBR_SHARE_OUTER;
 
-	return &data->iop;
+	iop->ops = &data->iop.ops;
+	return 0;
 
 out_free_data:
 	kfree(data);
-	return NULL;
+	return -EINVAL;
 }
 
 struct io_pgtable_init_fns io_pgtable_arm_64_lpae_s1_init_fns = {
@@ -310,21 +312,21 @@ static const struct iommu_flush_ops dummy_tlb_ops __initconst = {
 	.tlb_add_page	= dummy_tlb_add_page,
 };
 
-static void __init arm_lpae_dump_ops(struct io_pgtable_ops *ops)
+static void __init arm_lpae_dump_ops(struct io_pgtable *iop)
 {
-	struct arm_lpae_io_pgtable *data = io_pgtable_ops_to_data(ops);
+	struct arm_lpae_io_pgtable *data = io_pgtable_ops_to_data(iop->ops);
 	struct io_pgtable_cfg *cfg = &data->iop.cfg;
 
 	pr_err("cfg: pgsize_bitmap 0x%lx, ias %u-bit\n",
 		cfg->pgsize_bitmap, cfg->ias);
 	pr_err("data: %d levels, 0x%zx pgd_size, %u pg_shift, %u bits_per_level, pgd @ %p\n",
 		ARM_LPAE_MAX_LEVELS - data->start_level, ARM_LPAE_PGD_SIZE(data),
-		ilog2(ARM_LPAE_GRANULE(data)), data->bits_per_level, data->pgd);
+		ilog2(ARM_LPAE_GRANULE(data)), data->bits_per_level, iop->pgd);
 }
 
-#define __FAIL(ops, i)	({						\
+#define __FAIL(iop, i)	({						\
 		WARN(1, "selftest: test failed for fmt idx %d\n", (i));	\
-		arm_lpae_dump_ops(ops);					\
+		arm_lpae_dump_ops(iop);					\
 		selftest_running = false;				\
 		-EFAULT;						\
 })
@@ -336,34 +338,34 @@ static int __init arm_lpae_run_tests(struct io_pgtable_cfg *cfg)
 		ARM_64_LPAE_S2,
 	};
 
-	int i, j;
+	int i, j, ret;
 	unsigned long iova;
 	size_t size, mapped;
-	struct io_pgtable_ops *ops;
+	struct io_pgtable iop;
 
 	selftest_running = true;
 
 	for (i = 0; i < ARRAY_SIZE(fmts); ++i) {
 		cfg_cookie = cfg;
 		cfg->fmt = fmts[i];
-		ops = alloc_io_pgtable_ops(cfg, cfg);
-		if (!ops) {
+		ret = alloc_io_pgtable_ops(&iop, cfg, cfg);
+		if (ret) {
 			pr_err("selftest: failed to allocate io pgtable ops\n");
-			return -ENOMEM;
+			return ret;
 		}
 
 		/*
 		 * Initial sanity checks.
 		 * Empty page tables shouldn't provide any translations.
 		 */
-		if (ops->iova_to_phys(ops, 42))
-			return __FAIL(ops, i);
+		if (iopt_iova_to_phys(&iop, 42))
+			return __FAIL(&iop, i);
 
-		if (ops->iova_to_phys(ops, SZ_1G + 42))
-			return __FAIL(ops, i);
+		if (iopt_iova_to_phys(&iop, SZ_1G + 42))
+			return __FAIL(&iop, i);
 
-		if (ops->iova_to_phys(ops, SZ_2G + 42))
-			return __FAIL(ops, i);
+		if (iopt_iova_to_phys(&iop, SZ_2G + 42))
+			return __FAIL(&iop, i);
 
 		/*
 		 * Distinct mappings of different granule sizes.
@@ -372,60 +374,60 @@ static int __init arm_lpae_run_tests(struct io_pgtable_cfg *cfg)
 		for_each_set_bit(j, &cfg->pgsize_bitmap, BITS_PER_LONG) {
 			size = 1UL << j;
 
-			if (ops->map_pages(ops, iova, iova, size, 1,
+			if (iopt_map_pages(&iop, iova, iova, size, 1,
 					   IOMMU_READ | IOMMU_WRITE |
 					   IOMMU_NOEXEC | IOMMU_CACHE,
 					   GFP_KERNEL, &mapped))
-				return __FAIL(ops, i);
+				return __FAIL(&iop, i);
 
 			/* Overlapping mappings */
-			if (!ops->map_pages(ops, iova, iova + size, size, 1,
+			if (!iopt_map_pages(&iop, iova, iova + size, size, 1,
 					    IOMMU_READ | IOMMU_NOEXEC,
 					    GFP_KERNEL, &mapped))
-				return __FAIL(ops, i);
+				return __FAIL(&iop, i);
 
-			if (ops->iova_to_phys(ops, iova + 42) != (iova + 42))
-				return __FAIL(ops, i);
+			if (iopt_iova_to_phys(&iop, iova + 42) != (iova + 42))
+				return __FAIL(&iop, i);
 
 			iova += SZ_1G;
 		}
 
 		/* Partial unmap */
 		size = 1UL << __ffs(cfg->pgsize_bitmap);
-		if (ops->unmap_pages(ops, SZ_1G + size, size, 1, NULL) != size)
-			return __FAIL(ops, i);
+		if (iopt_unmap_pages(&iop, SZ_1G + size, size, 1, NULL) != size)
+			return __FAIL(&iop, i);
 
 		/* Remap of partial unmap */
-		if (ops->map_pages(ops, SZ_1G + size, size, size, 1,
+		if (iopt_map_pages(&iop, SZ_1G + size, size, size, 1,
 				   IOMMU_READ, GFP_KERNEL, &mapped))
-			return __FAIL(ops, i);
+			return __FAIL(&iop, i);
 
-		if (ops->iova_to_phys(ops, SZ_1G + size + 42) != (size + 42))
-			return __FAIL(ops, i);
+		if (iopt_iova_to_phys(&iop, SZ_1G + size + 42) != (size + 42))
+			return __FAIL(&iop, i);
 
 		/* Full unmap */
 		iova = 0;
 		for_each_set_bit(j, &cfg->pgsize_bitmap, BITS_PER_LONG) {
 			size = 1UL << j;
 
-			if (ops->unmap_pages(ops, iova, size, 1, NULL) != size)
-				return __FAIL(ops, i);
+			if (iopt_unmap_pages(&iop, iova, size, 1, NULL) != size)
+				return __FAIL(&iop, i);
 
-			if (ops->iova_to_phys(ops, iova + 42))
-				return __FAIL(ops, i);
+			if (iopt_iova_to_phys(&iop, iova + 42))
+				return __FAIL(&iop, i);
 
 			/* Remap full block */
-			if (ops->map_pages(ops, iova, iova, size, 1,
+			if (iopt_map_pages(&iop, iova, iova, size, 1,
 					   IOMMU_WRITE, GFP_KERNEL, &mapped))
-				return __FAIL(ops, i);
+				return __FAIL(&iop, i);
 
-			if (ops->iova_to_phys(ops, iova + 42) != (iova + 42))
-				return __FAIL(ops, i);
+			if (iopt_iova_to_phys(&iop, iova + 42) != (iova + 42))
+				return __FAIL(&iop, i);
 
 			iova += SZ_1G;
 		}
 
-		free_io_pgtable_ops(ops);
+		free_io_pgtable_ops(&iop);
 	}
 
 	selftest_running = false;

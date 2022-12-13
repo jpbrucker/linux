@@ -2005,7 +2005,7 @@ static void protection_domain_free(struct protection_domain *domain)
 		return;
 
 	if (domain->iop.pgtbl_cfg.tlb)
-		free_io_pgtable_ops(&domain->iop.iop.ops);
+		free_io_pgtable_ops(&domain->iop.iop);
 
 	if (domain->id)
 		domain_id_free(domain->id);
@@ -2058,7 +2058,6 @@ static int protection_domain_init_v2(struct protection_domain *domain)
 
 static struct protection_domain *protection_domain_alloc(unsigned int type)
 {
-	struct io_pgtable_ops *pgtbl_ops;
 	struct protection_domain *domain;
 	int pgtable = amd_iommu_pgtable;
 	int mode = DEFAULT_PGTABLE_LEVEL;
@@ -2098,8 +2097,9 @@ static struct protection_domain *protection_domain_alloc(unsigned int type)
 		return domain;
 
 	domain->iop.pgtbl_cfg.fmt = pgtable;
-	pgtbl_ops = alloc_io_pgtable_ops(&domain->iop.pgtbl_cfg, domain);
-	if (!pgtbl_ops) {
+	ret = alloc_io_pgtable_ops(&domain->iop.iop, &domain->iop.pgtbl_cfg,
+				   domain);
+	if (ret) {
 		domain_id_free(domain->id);
 		goto out_err;
 	}
@@ -2192,7 +2192,7 @@ static void amd_iommu_iotlb_sync_map(struct iommu_domain *dom,
 				     unsigned long iova, size_t size)
 {
 	struct protection_domain *domain = to_pdomain(dom);
-	struct io_pgtable_ops *ops = &domain->iop.iop.ops;
+	struct io_pgtable_ops *ops = domain->iop.iop.ops;
 
 	if (ops->map_pages)
 		domain_flush_np_cache(domain, iova, size);
@@ -2203,9 +2203,7 @@ static int amd_iommu_map_pages(struct iommu_domain *dom, unsigned long iova,
 			       int iommu_prot, gfp_t gfp, size_t *mapped)
 {
 	struct protection_domain *domain = to_pdomain(dom);
-	struct io_pgtable_ops *ops = &domain->iop.iop.ops;
 	int prot = 0;
-	int ret = -EINVAL;
 
 	if ((amd_iommu_pgtable == AMD_IOMMU_V1) &&
 	    (domain->iop.mode == PAGE_MODE_NONE))
@@ -2216,12 +2214,8 @@ static int amd_iommu_map_pages(struct iommu_domain *dom, unsigned long iova,
 	if (iommu_prot & IOMMU_WRITE)
 		prot |= IOMMU_PROT_IW;
 
-	if (ops->map_pages) {
-		ret = ops->map_pages(ops, iova, paddr, pgsize,
-				     pgcount, prot, gfp, mapped);
-	}
-
-	return ret;
+	return iopt_map_pages(&domain->iop.iop, iova, paddr, pgsize, pgcount,
+			      prot, gfp, mapped);
 }
 
 static void amd_iommu_iotlb_gather_add_page(struct iommu_domain *domain,
@@ -2250,14 +2244,13 @@ static size_t amd_iommu_unmap_pages(struct iommu_domain *dom, unsigned long iova
 				    struct iommu_iotlb_gather *gather)
 {
 	struct protection_domain *domain = to_pdomain(dom);
-	struct io_pgtable_ops *ops = &domain->iop.iop.ops;
 	size_t r;
 
 	if ((amd_iommu_pgtable == AMD_IOMMU_V1) &&
 	    (domain->iop.mode == PAGE_MODE_NONE))
 		return 0;
 
-	r = (ops->unmap_pages) ? ops->unmap_pages(ops, iova, pgsize, pgcount, NULL) : 0;
+	r = iopt_unmap_pages(&domain->iop.iop, iova, pgsize, pgcount, NULL);
 
 	if (r)
 		amd_iommu_iotlb_gather_add_page(dom, gather, iova, r);
@@ -2269,9 +2262,8 @@ static phys_addr_t amd_iommu_iova_to_phys(struct iommu_domain *dom,
 					  dma_addr_t iova)
 {
 	struct protection_domain *domain = to_pdomain(dom);
-	struct io_pgtable_ops *ops = &domain->iop.iop.ops;
 
-	return ops->iova_to_phys(ops, iova);
+	return iopt_iova_to_phys(&domain->iop.iop, iova);
 }
 
 static bool amd_iommu_capable(struct device *dev, enum iommu_cap cap)
@@ -2469,7 +2461,7 @@ void amd_iommu_domain_direct_map(struct iommu_domain *dom)
 	spin_lock_irqsave(&domain->lock, flags);
 
 	if (domain->iop.pgtbl_cfg.tlb)
-		free_io_pgtable_ops(&domain->iop.iop.ops);
+		free_io_pgtable_ops(&domain->iop.iop);
 
 	spin_unlock_irqrestore(&domain->lock, flags);
 }

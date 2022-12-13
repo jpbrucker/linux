@@ -614,7 +614,6 @@ static int arm_smmu_init_domain_context(struct iommu_domain *domain,
 {
 	int irq, start, ret = 0;
 	unsigned long ias, oas;
-	struct io_pgtable_ops *pgtbl_ops;
 	struct io_pgtable_cfg pgtbl_cfg;
 	enum io_pgtable_fmt fmt;
 	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
@@ -765,11 +764,9 @@ static int arm_smmu_init_domain_context(struct iommu_domain *domain,
 	if (smmu_domain->pgtbl_quirks)
 		pgtbl_cfg.quirks |= smmu_domain->pgtbl_quirks;
 
-	pgtbl_ops = alloc_io_pgtable_ops(&pgtbl_cfg, smmu_domain);
-	if (!pgtbl_ops) {
-		ret = -ENOMEM;
+	ret = alloc_io_pgtable_ops(&smmu_domain->pgtbl, &pgtbl_cfg, smmu_domain);
+	if (ret)
 		goto out_clear_smmu;
-	}
 
 	/* Update the domain's page sizes to reflect the page table format */
 	domain->pgsize_bitmap = pgtbl_cfg.pgsize_bitmap;
@@ -808,8 +805,6 @@ static int arm_smmu_init_domain_context(struct iommu_domain *domain,
 
 	mutex_unlock(&smmu_domain->init_mutex);
 
-	/* Publish page table ops for map/unmap */
-	smmu_domain->pgtbl_ops = pgtbl_ops;
 	return 0;
 
 out_clear_smmu:
@@ -846,7 +841,7 @@ static void arm_smmu_destroy_domain_context(struct iommu_domain *domain)
 		devm_free_irq(smmu->dev, irq, domain);
 	}
 
-	free_io_pgtable_ops(smmu_domain->pgtbl_ops);
+	free_io_pgtable_ops(&smmu_domain->pgtbl);
 	__arm_smmu_free_bitmap(smmu->context_map, cfg->cbndx);
 
 	arm_smmu_rpm_put(smmu);
@@ -1181,15 +1176,13 @@ static int arm_smmu_map_pages(struct iommu_domain *domain, unsigned long iova,
 			      phys_addr_t paddr, size_t pgsize, size_t pgcount,
 			      int prot, gfp_t gfp, size_t *mapped)
 {
-	struct io_pgtable_ops *ops = to_smmu_domain(domain)->pgtbl_ops;
-	struct arm_smmu_device *smmu = to_smmu_domain(domain)->smmu;
+	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
+	struct arm_smmu_device *smmu = smmu_domain->smmu;
 	int ret;
 
-	if (!ops)
-		return -ENODEV;
-
 	arm_smmu_rpm_get(smmu);
-	ret = ops->map_pages(ops, iova, paddr, pgsize, pgcount, prot, gfp, mapped);
+	ret = iopt_map_pages(&smmu_domain->pgtbl, iova, paddr, pgsize, pgcount,
+			     prot, gfp, mapped);
 	arm_smmu_rpm_put(smmu);
 
 	return ret;
@@ -1199,15 +1192,13 @@ static size_t arm_smmu_unmap_pages(struct iommu_domain *domain, unsigned long io
 				   size_t pgsize, size_t pgcount,
 				   struct iommu_iotlb_gather *iotlb_gather)
 {
-	struct io_pgtable_ops *ops = to_smmu_domain(domain)->pgtbl_ops;
-	struct arm_smmu_device *smmu = to_smmu_domain(domain)->smmu;
+	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
+	struct arm_smmu_device *smmu = smmu_domain->smmu;
 	size_t ret;
 
-	if (!ops)
-		return 0;
-
 	arm_smmu_rpm_get(smmu);
-	ret = ops->unmap_pages(ops, iova, pgsize, pgcount, iotlb_gather);
+	ret = iopt_unmap_pages(&smmu_domain->pgtbl, iova, pgsize, pgcount,
+			       iotlb_gather);
 	arm_smmu_rpm_put(smmu);
 
 	return ret;
@@ -1249,7 +1240,6 @@ static phys_addr_t arm_smmu_iova_to_phys_hard(struct iommu_domain *domain,
 	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
 	struct arm_smmu_device *smmu = smmu_domain->smmu;
 	struct arm_smmu_cfg *cfg = &smmu_domain->cfg;
-	struct io_pgtable_ops *ops= smmu_domain->pgtbl_ops;
 	struct device *dev = smmu->dev;
 	void __iomem *reg;
 	u32 tmp;
@@ -1277,7 +1267,7 @@ static phys_addr_t arm_smmu_iova_to_phys_hard(struct iommu_domain *domain,
 			"iova to phys timed out on %pad. Falling back to software table walk.\n",
 			&iova);
 		arm_smmu_rpm_put(smmu);
-		return ops->iova_to_phys(ops, iova);
+		return iopt_iova_to_phys(&smmu_domain->pgtbl, iova);
 	}
 
 	phys = arm_smmu_cb_readq(smmu, idx, ARM_SMMU_CB_PAR);
@@ -1299,16 +1289,12 @@ static phys_addr_t arm_smmu_iova_to_phys(struct iommu_domain *domain,
 					dma_addr_t iova)
 {
 	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
-	struct io_pgtable_ops *ops = smmu_domain->pgtbl_ops;
-
-	if (!ops)
-		return 0;
 
 	if (smmu_domain->smmu->features & ARM_SMMU_FEAT_TRANS_OPS &&
 			smmu_domain->stage == ARM_SMMU_DOMAIN_S1)
 		return arm_smmu_iova_to_phys_hard(domain, iova);
 
-	return ops->iova_to_phys(ops, iova);
+	return iopt_iova_to_phys(&smmu_domain->pgtbl, iova);
 }
 
 static bool arm_smmu_capable(struct device *dev, enum iommu_cap cap)

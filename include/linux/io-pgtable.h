@@ -150,6 +150,20 @@ struct io_pgtable_cfg {
 };
 
 /**
+ * struct io_pgtable - Structure describing a set of page tables.
+ *
+ * @ops:	The page table operations in use for this set of page tables.
+ * @cookie:	An opaque token provided by the IOMMU driver and passed back to
+ *		any callback routines.
+ * @pgd:	Virtual address of the page directory.
+ */
+struct io_pgtable {
+	struct io_pgtable_ops	*ops;
+	void			*cookie;
+	void			*pgd;
+};
+
+/**
  * struct io_pgtable_ops - Page table manipulation API for IOMMU drivers.
  *
  * @map_pages:    Map a physically contiguous range of pages of the same size.
@@ -160,36 +174,64 @@ struct io_pgtable_cfg {
  * the same names.
  */
 struct io_pgtable_ops {
-	int (*map_pages)(struct io_pgtable_ops *ops, unsigned long iova,
+	int (*map_pages)(struct io_pgtable *iop, unsigned long iova,
 			 phys_addr_t paddr, size_t pgsize, size_t pgcount,
 			 int prot, gfp_t gfp, size_t *mapped);
-	size_t (*unmap_pages)(struct io_pgtable_ops *ops, unsigned long iova,
+	size_t (*unmap_pages)(struct io_pgtable *iop, unsigned long iova,
 			      size_t pgsize, size_t pgcount,
 			      struct iommu_iotlb_gather *gather);
-	phys_addr_t (*iova_to_phys)(struct io_pgtable_ops *ops,
-				    unsigned long iova);
+	phys_addr_t (*iova_to_phys)(struct io_pgtable *iop, unsigned long iova);
 };
+
+static inline int
+iopt_map_pages(struct io_pgtable *iop, unsigned long iova, phys_addr_t paddr,
+	       size_t pgsize, size_t pgcount, int prot, gfp_t gfp,
+	       size_t *mapped)
+{
+	if (!iop->ops || !iop->ops->map_pages)
+		return -EINVAL;
+	return iop->ops->map_pages(iop, iova, paddr, pgsize, pgcount, prot, gfp,
+				   mapped);
+}
+
+static inline size_t
+iopt_unmap_pages(struct io_pgtable *iop, unsigned long iova, size_t pgsize,
+		 size_t pgcount, struct iommu_iotlb_gather *gather)
+{
+	if (!iop->ops || !iop->ops->unmap_pages)
+		return 0;
+	return iop->ops->unmap_pages(iop, iova, pgsize, pgcount, gather);
+}
+
+static inline phys_addr_t
+iopt_iova_to_phys(struct io_pgtable *iop, unsigned long iova)
+{
+	if (!iop->ops || !iop->ops->iova_to_phys)
+		return 0;
+	return iop->ops->iova_to_phys(iop, iova);
+}
 
 /**
  * alloc_io_pgtable_ops() - Allocate a page table allocator for use by an IOMMU.
  *
+ * @iop:    The page table object, filled with the allocated ops on success
  * @cfg:    The page table configuration. This will be modified to represent
  *          the configuration actually provided by the allocator (e.g. the
  *          pgsize_bitmap may be restricted).
  * @cookie: An opaque token provided by the IOMMU driver and passed back to
  *          the callback routines in cfg->tlb.
  */
-struct io_pgtable_ops *alloc_io_pgtable_ops(struct io_pgtable_cfg *cfg,
-					    void *cookie);
+int alloc_io_pgtable_ops(struct io_pgtable *iop, struct io_pgtable_cfg *cfg,
+			 void *cookie);
 
 /**
- * free_io_pgtable_ops() - Free an io_pgtable_ops structure. The caller
+ * free_io_pgtable_ops() - Free the page table. The caller
  *                         *must* ensure that the page table is no longer
  *                         live, but the TLB can be dirty.
  *
- * @ops: The ops returned from alloc_io_pgtable_ops.
+ * @iop: The iop object passed to alloc_io_pgtable_ops
  */
-void free_io_pgtable_ops(struct io_pgtable_ops *ops);
+void free_io_pgtable_ops(struct io_pgtable *iop);
 
 /**
  * io_pgtable_configure - Create page table config
@@ -209,42 +251,41 @@ int io_pgtable_configure(struct io_pgtable_cfg *cfg, size_t *pgd_size);
  */
 
 /**
- * struct io_pgtable - Internal structure describing a set of page tables.
+ * struct io_pgtable_params - Internal structure describing parameters for a
+ *			      given page table configuration
  *
- * @cookie: An opaque token provided by the IOMMU driver and passed back to
- *          any callback routines.
  * @cfg:    A copy of the page table configuration.
  * @ops:    The page table operations in use for this set of page tables.
  */
-struct io_pgtable {
-	void			*cookie;
+struct io_pgtable_params {
 	struct io_pgtable_cfg	cfg;
 	struct io_pgtable_ops	ops;
 };
 
-#define io_pgtable_ops_to_pgtable(x) container_of((x), struct io_pgtable, ops)
+#define io_pgtable_ops_to_params(x) container_of((x), struct io_pgtable_params, ops)
 
-static inline void io_pgtable_tlb_flush_all(struct io_pgtable *iop)
+static inline void io_pgtable_tlb_flush_all(struct io_pgtable_cfg *cfg,
+					    struct io_pgtable *iop)
 {
-	if (iop->cfg.tlb && iop->cfg.tlb->tlb_flush_all)
-		iop->cfg.tlb->tlb_flush_all(iop->cookie);
+	if (cfg->tlb && cfg->tlb->tlb_flush_all)
+		cfg->tlb->tlb_flush_all(iop->cookie);
 }
 
 static inline void
-io_pgtable_tlb_flush_walk(struct io_pgtable *iop, unsigned long iova,
-			  size_t size, size_t granule)
+io_pgtable_tlb_flush_walk(struct io_pgtable_cfg *cfg, struct io_pgtable *iop,
+			  unsigned long iova, size_t size, size_t granule)
 {
-	if (iop->cfg.tlb && iop->cfg.tlb->tlb_flush_walk)
-		iop->cfg.tlb->tlb_flush_walk(iova, size, granule, iop->cookie);
+	if (cfg->tlb && cfg->tlb->tlb_flush_walk)
+		cfg->tlb->tlb_flush_walk(iova, size, granule, iop->cookie);
 }
 
 static inline void
-io_pgtable_tlb_add_page(struct io_pgtable *iop,
+io_pgtable_tlb_add_page(struct io_pgtable_cfg *cfg, struct io_pgtable *iop,
 			struct iommu_iotlb_gather * gather, unsigned long iova,
 			size_t granule)
 {
-	if (iop->cfg.tlb && iop->cfg.tlb->tlb_add_page)
-		iop->cfg.tlb->tlb_add_page(gather, iova, granule, iop->cookie);
+	if (cfg->tlb && cfg->tlb->tlb_add_page)
+		cfg->tlb->tlb_add_page(gather, iova, granule, iop->cookie);
 }
 
 /**
@@ -256,7 +297,8 @@ io_pgtable_tlb_add_page(struct io_pgtable *iop,
  * @configure: Create the configuration without allocating anything. Optional.
  */
 struct io_pgtable_init_fns {
-	struct io_pgtable *(*alloc)(struct io_pgtable_cfg *cfg, void *cookie);
+	int (*alloc)(struct io_pgtable *iop, struct io_pgtable_cfg *cfg,
+		     void *cookie);
 	void (*free)(struct io_pgtable *iop);
 	int (*configure)(struct io_pgtable_cfg *cfg, size_t *pgd_size);
 };

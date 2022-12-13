@@ -2058,7 +2058,7 @@ static void arm_smmu_domain_free(struct iommu_domain *domain)
 	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
 	struct arm_smmu_device *smmu = smmu_domain->smmu;
 
-	free_io_pgtable_ops(smmu_domain->pgtbl_ops);
+	free_io_pgtable_ops(&smmu_domain->pgtbl);
 
 	/* Free the CD and ASID, if we allocated them */
 	if (smmu_domain->stage == ARM_SMMU_DOMAIN_S1) {
@@ -2171,7 +2171,6 @@ static int arm_smmu_domain_finalise(struct iommu_domain *domain,
 	unsigned long ias, oas;
 	enum io_pgtable_fmt fmt;
 	struct io_pgtable_cfg pgtbl_cfg;
-	struct io_pgtable_ops *pgtbl_ops;
 	int (*finalise_stage_fn)(struct arm_smmu_domain *,
 				 struct arm_smmu_master *,
 				 struct io_pgtable_cfg *);
@@ -2218,9 +2217,9 @@ static int arm_smmu_domain_finalise(struct iommu_domain *domain,
 		.iommu_dev	= smmu->dev,
 	};
 
-	pgtbl_ops = alloc_io_pgtable_ops(&pgtbl_cfg, smmu_domain);
-	if (!pgtbl_ops)
-		return -ENOMEM;
+	ret = alloc_io_pgtable_ops(&smmu_domain->pgtbl, &pgtbl_cfg, smmu_domain);
+	if (ret)
+		return ret;
 
 	domain->pgsize_bitmap = pgtbl_cfg.pgsize_bitmap;
 	domain->geometry.aperture_end = (1UL << pgtbl_cfg.ias) - 1;
@@ -2228,11 +2227,10 @@ static int arm_smmu_domain_finalise(struct iommu_domain *domain,
 
 	ret = finalise_stage_fn(smmu_domain, master, &pgtbl_cfg);
 	if (ret < 0) {
-		free_io_pgtable_ops(pgtbl_ops);
+		free_io_pgtable_ops(&smmu_domain->pgtbl);
 		return ret;
 	}
 
-	smmu_domain->pgtbl_ops = pgtbl_ops;
 	return 0;
 }
 
@@ -2468,12 +2466,10 @@ static int arm_smmu_map_pages(struct iommu_domain *domain, unsigned long iova,
 			      phys_addr_t paddr, size_t pgsize, size_t pgcount,
 			      int prot, gfp_t gfp, size_t *mapped)
 {
-	struct io_pgtable_ops *ops = to_smmu_domain(domain)->pgtbl_ops;
+	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
 
-	if (!ops)
-		return -ENODEV;
-
-	return ops->map_pages(ops, iova, paddr, pgsize, pgcount, prot, gfp, mapped);
+	return iopt_map_pages(&smmu_domain->pgtbl, iova, paddr, pgsize, pgcount,
+			      prot, gfp, mapped);
 }
 
 static size_t arm_smmu_unmap_pages(struct iommu_domain *domain, unsigned long iova,
@@ -2481,12 +2477,9 @@ static size_t arm_smmu_unmap_pages(struct iommu_domain *domain, unsigned long io
 				   struct iommu_iotlb_gather *gather)
 {
 	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
-	struct io_pgtable_ops *ops = smmu_domain->pgtbl_ops;
 
-	if (!ops)
-		return 0;
-
-	return ops->unmap_pages(ops, iova, pgsize, pgcount, gather);
+	return iopt_unmap_pages(&smmu_domain->pgtbl, iova, pgsize, pgcount,
+				gather);
 }
 
 static void arm_smmu_flush_iotlb_all(struct iommu_domain *domain)
@@ -2513,12 +2506,9 @@ static void arm_smmu_iotlb_sync(struct iommu_domain *domain,
 static phys_addr_t
 arm_smmu_iova_to_phys(struct iommu_domain *domain, dma_addr_t iova)
 {
-	struct io_pgtable_ops *ops = to_smmu_domain(domain)->pgtbl_ops;
+	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
 
-	if (!ops)
-		return 0;
-
-	return ops->iova_to_phys(ops, iova);
+	return iopt_iova_to_phys(&smmu_domain->pgtbl, iova);
 }
 
 static struct platform_driver arm_smmu_driver;
