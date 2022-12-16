@@ -26,6 +26,9 @@ int kvm_iommu_init(void);
 int kvm_iommu_init_device(struct kvm_hyp_iommu *iommu);
 void *kvm_iommu_donate_page(void);
 void kvm_iommu_reclaim_page(void *p);
+void hyp_iommu_lock(void);
+void hyp_iommu_unlock(void);
+void hyp_assert_iommu_lock_held(void);
 
 /* Hypercall handlers */
 int kvm_iommu_alloc_domain(pkvm_handle_t iommu_id, pkvm_handle_t domain_id,

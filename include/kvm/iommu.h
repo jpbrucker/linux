@@ -35,7 +35,7 @@ extern struct kvm_hyp_iommu_memcache *kvm_nvhe_sym(kvm_hyp_iommu_memcaches);
 
 struct kvm_hyp_iommu_domain {
 	void			*pgd;
-	u32			refs;
+	atomic_t		refs;
 };
 
 /*

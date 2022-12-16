@@ -142,6 +142,7 @@ static int smmu_sync_cmd(struct hyp_arm_smmu_v3_device *smmu)
 	if (ret)
 		return ret;
 
+	hyp_assert_iommu_lock_held();
 	return smmu_wait_event(smmu, smmu_cmdq_empty(smmu));
 }
 
@@ -419,7 +420,9 @@ static void smmu_tlb_flush_all(void *cookie)
 	if (smmu->iommu.power_is_off && smmu->caches_clean_on_power_on)
 		return;
 
+	hyp_iommu_lock();
 	WARN_ON(smmu_send_cmd(smmu, &cmd));
+	hyp_iommu_unlock();
 }
 
 static void smmu_tlb_inv_range(struct kvm_iommu_tlb_cookie *data,
@@ -443,12 +446,14 @@ static void smmu_tlb_inv_range(struct kvm_iommu_tlb_cookie *data,
 	 */
 	BUG_ON(end < iova);
 
+	hyp_iommu_lock();
 	while (iova < end) {
 		cmd.tlbi.addr = iova;
 		WARN_ON(smmu_send_cmd(smmu, &cmd));
 		BUG_ON(iova + granule < iova);
 		iova += granule;
 	}
+	hyp_iommu_unlock();
 }
 
 static void smmu_tlb_flush_walk(unsigned long iova, size_t size,
