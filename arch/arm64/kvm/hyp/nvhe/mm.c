@@ -131,6 +131,7 @@ int pkvm_create_mappings(void *from, void *to, enum kvm_pgtable_prot prot)
 
 	hyp_spin_lock(&pkvm_pgd_lock);
 	ret = pkvm_create_mappings_locked(from, to, prot);
+	// TODO: update vmmemap
 	hyp_spin_unlock(&pkvm_pgd_lock);
 
 	return ret;

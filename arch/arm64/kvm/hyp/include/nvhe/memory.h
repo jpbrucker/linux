@@ -13,12 +13,29 @@
  */
 #define HOST_PAGE_NEED_POISONING	BIT(0)
 #define HOST_PAGE_PENDING_RECLAIM	BIT(1)
+#define HYP_PAGE_OWNER_MASK		GENMASK(3, 2)
+#define HYP_PAGE_STATE_MASK		GENMASK(5, 4)
 
 struct hyp_page {
 	unsigned short refcount;
 	u8 order;
 	u8 flags;
 };
+
+#define hyp_page_owner(p)		FIELD_GET(HYP_PAGE_OWNER_MASK, (p)->flags)
+#define hyp_page_state(p)		FIELD_GET(HYP_PAGE_STATE_MASK, (p)->flags)
+
+static inline void hyp_page_set_owner(struct hyp_page *p, int owner)
+{
+	p->flags &= ~HYP_PAGE_OWNER_MASK;
+	p->flags |= FIELD_PREP(HYP_PAGE_OWNER_MASK, owner);
+}
+
+static inline void hyp_page_set_state(struct hyp_page *p, int state)
+{
+	p->flags &= ~HYP_PAGE_STATE_MASK;
+	p->flags |= FIELD_PREP(HYP_PAGE_STATE_MASK, state);
+}
 
 extern u64 __hyp_vmemmap;
 #define hyp_vmemmap ((struct hyp_page *)__hyp_vmemmap)

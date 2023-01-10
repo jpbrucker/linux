@@ -275,7 +275,7 @@ static int reclaim_walker(const struct kvm_pgtable_visit_ctx *ctx,
 		return 0;
 
 	page = hyp_phys_to_page(kvm_pte_to_phys(pte));
-	switch (pkvm_getstate(kvm_pgtable_stage2_pte_prot(pte))) {
+	switch (hyp_page_state(page)) {
 	case PKVM_PAGE_OWNED:
 		page->flags |= HOST_PAGE_NEED_POISONING;
 		fallthrough;
@@ -505,6 +505,17 @@ int host_stage2_idmap_locked(phys_addr_t addr, u64 size,
 
 int host_stage2_set_owner_locked(phys_addr_t addr, u64 size, u8 owner_id)
 {
+	struct hyp_page *p, *end;
+
+	if (addr_is_memory(addr)) {
+		p = hyp_phys_to_page(addr);
+		end = hyp_phys_to_page(addr + size);
+		while (p != end) {
+			hyp_page_set_state(p, PKVM_PAGE_OWNED);
+			hyp_page_set_owner(p++, owner_id);
+		}
+	}
+
 	return host_stage2_try(kvm_pgtable_stage2_set_owner, &host_mmu.pgt,
 			       addr, size, &host_s2_pool, owner_id);
 }
@@ -708,7 +719,15 @@ static int __host_check_page_state_range(u64 addr, u64 size,
 static int __host_set_page_state_range(u64 addr, u64 size,
 				       enum pkvm_page_state state)
 {
+	struct hyp_page *p, *end;
 	enum kvm_pgtable_prot prot = pkvm_mkstate(PKVM_HOST_MEM_PROT, state);
+
+	if (addr_is_memory(addr)) {
+		p = hyp_phys_to_page(addr);
+		end = hyp_phys_to_page(addr + size);
+		while (p != end)
+			hyp_page_set_state(p++, state);
+	}
 
 	return host_stage2_idmap_locked(addr, size, prot);
 }
@@ -1645,48 +1664,25 @@ void hyp_unpin_shared_mem(void *from, void *to)
 	host_unlock_component();
 }
 
-static int __host_check_page_dma_shared(phys_addr_t phys_addr)
+/*
+ * Atomically replace the struct hyp_page with the new value. Return true on
+ * success. Does not modify @old on failure unlike atomic_try_cmpxchg().
+ */
+static bool hyp_page_try_cmpxchg(struct hyp_page *dst, struct hyp_page *old,
+				 struct hyp_page *new)
 {
-	int ret;
-	u64 hyp_addr;
+	u32 *dst_p = (u32 *)dst;
+	u32 *old_p = (u32 *)old;
+	u32 *new_p = (u32 *)new;
 
-	/*
-	 * The page is already refcounted. Make sure it's owned by the host, and
-	 * not part of the hyp pool.
-	 */
-	ret = __host_check_page_state_range(phys_addr, PAGE_SIZE,
-					    PKVM_PAGE_SHARED_OWNED);
-	if (ret)
-		return ret;
-
-	/*
-	 * Refcounted and owned by host, means it's either mapped in the
-	 * SMMU, or it's some VM/VCPU state shared with the hypervisor.
-	 * The host has no reason to use a page for both.
-	 */
-	hyp_addr = (u64)hyp_phys_to_virt(phys_addr);
-	return __hyp_check_page_state_range(hyp_addr, PAGE_SIZE, PKVM_NOPAGE);
+	return cmpxchg(dst_p, *old_p, *new_p) == *old_p;
 }
 
 static int __pkvm_host_share_dma_page(phys_addr_t phys_addr, bool is_ram)
 {
 	int ret;
 	struct hyp_page *p = hyp_phys_to_page(phys_addr);
-	struct pkvm_mem_share share = {
-		.tx	= {
-			.nr_pages	= 1,
-			.initiator	= {
-				.id	= PKVM_ID_HOST,
-				.addr	= phys_addr,
-			},
-			.completer	= {
-				.id	= PKVM_ID_IOMMU,
-			},
-		},
-	};
-
-	hyp_assert_lock_held(&host_mmu.lock);
-	hyp_assert_lock_held(&pkvm_pgd_lock);
+	struct hyp_page old, new;
 
 	/*
 	 * Some differences between handling of RAM and device memory:
@@ -1704,47 +1700,50 @@ static int __pkvm_host_share_dma_page(phys_addr_t phys_addr, bool is_ram)
 	if (!is_ram)
 		return addr_is_memory(phys_addr) ? -EINVAL : 0;
 
-	ret = hyp_page_ref_inc_return(p);
-	BUG_ON(ret == 0);
-	if (ret < 0)
-		return ret;
-	else if (ret == 1)
-		ret = do_share(&share);
-	else
-		ret = __host_check_page_dma_shared(phys_addr);
+	do {
+		new = old = *p;
+		switch (hyp_page_owner(&old)) {
+		case PKVM_ID_HOST:
+			if (hyp_page_state(&old) != PKVM_PAGE_OWNED)
+				return -EPERM;
+			hyp_page_set_owner(&new, PKVM_ID_IOMMU);
+			break;
+		case PKVM_ID_IOMMU:
+			break;
+		default:
+			return -EPERM;
+		}
 
-	if (ret)
-		hyp_page_ref_dec(p);
+		ret = hyp_page_ref_inc_return(&new);
+		BUG_ON(ret == 0);
+		if (ret < 0)
+			return ret;
 
-	return ret;
+	} while (!hyp_page_try_cmpxchg(p, &old, &new));
+
+	return 0;
+
 }
 
 static int __pkvm_host_unshare_dma_page(phys_addr_t phys_addr)
 {
 	struct hyp_page *p = hyp_phys_to_page(phys_addr);
-	struct pkvm_mem_share share = {
-		.tx	= {
-			.nr_pages	= 1,
-			.initiator	= {
-				.id	= PKVM_ID_HOST,
-				.addr	= phys_addr,
-			},
-			.completer	= {
-				.id	= PKVM_ID_IOMMU,
-			},
-		},
-	};
-
-	hyp_assert_lock_held(&host_mmu.lock);
-	hyp_assert_lock_held(&pkvm_pgd_lock);
+	struct hyp_page old, new;
 
 	if (!addr_is_memory(phys_addr))
 		return 0;
 
-	if (!hyp_page_ref_dec_and_test(p))
-		return 0;
+	do {
+		old = new = *p;
+		BUG_ON(hyp_page_owner(&old) != PKVM_ID_IOMMU);
 
-	return do_unshare(&share);
+		if (hyp_page_ref_dec_and_test(&new)) {
+			hyp_page_set_owner(&new, PKVM_ID_HOST);
+			hyp_page_set_state(&new, PKVM_PAGE_OWNED);
+		}
+	} while (!hyp_page_try_cmpxchg(p, &old, &new));
+
+	return 0;
 }
 
 /*
@@ -1771,9 +1770,6 @@ int __pkvm_host_share_dma(phys_addr_t phys_addr, size_t size, bool is_ram)
 	if (WARN_ON(!PAGE_ALIGNED(phys_addr | size)))
 		return -EINVAL;
 
-	host_lock_component();
-	hyp_lock_component();
-
 	for (i = 0; i < nr_pages; i++) {
 		ret = __pkvm_host_share_dma_page(phys_addr + i * PAGE_SIZE,
 						 is_ram);
@@ -1786,9 +1782,6 @@ int __pkvm_host_share_dma(phys_addr_t phys_addr, size_t size, bool is_ram)
 			__pkvm_host_unshare_dma_page(phys_addr + i * PAGE_SIZE);
 	}
 
-	hyp_unlock_component();
-	host_unlock_component();
-
 	return ret;
 }
 
@@ -1797,9 +1790,6 @@ int __pkvm_host_unshare_dma(phys_addr_t phys_addr, size_t size)
 	int i;
 	int ret;
 	size_t nr_pages = size >> PAGE_SHIFT;
-
-	host_lock_component();
-	hyp_lock_component();
 
 	/*
 	 * We end up here after the caller successfully unmapped the page from
@@ -1811,9 +1801,6 @@ int __pkvm_host_unshare_dma(phys_addr_t phys_addr, size_t size)
 		if (ret)
 			break;
 	}
-
-	hyp_unlock_component();
-	host_unlock_component();
 
 	return ret;
 }
