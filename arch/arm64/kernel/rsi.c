@@ -13,6 +13,8 @@ struct realm_config config;
 unsigned long prot_ns_shared;
 EXPORT_SYMBOL(prot_ns_shared);
 
+unsigned int phys_mask_shift = CONFIG_ARM64_PA_BITS;
+
 DEFINE_STATIC_KEY_FALSE_RO(rsi_present);
 EXPORT_SYMBOL(rsi_present);
 
@@ -79,6 +81,9 @@ void __init arm64_rsi_init(void)
 	if (rsi_get_realm_config(&config))
 		return;
 	prot_ns_shared = BIT(config.ipa_bits - 1);
+
+	if (config.ipa_bits - 1 < phys_mask_shift)
+		phys_mask_shift = config.ipa_bits - 1;
 
 	static_branch_enable(&rsi_present);
 }
