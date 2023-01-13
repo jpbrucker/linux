@@ -43,7 +43,7 @@ struct kvm_arm_smmu_domain {
 	container_of(_domain, struct kvm_arm_smmu_domain, domain)
 
 static size_t				kvm_arm_smmu_cur;
-static size_t				kvm_arm_smmu_count;
+static ssize_t				kvm_arm_smmu_count;
 static struct hyp_arm_smmu_v3_device	*kvm_arm_smmu_array;
 static struct kvm_hyp_iommu_memcache	*kvm_arm_smmu_memcache;
 static DEFINE_IDA(kvm_arm_smmu_domain_ida);
@@ -762,13 +762,26 @@ static const struct of_device_id arm_smmu_of_match[] = {
 	{ },
 };
 
+static const struct platform_device_id kvm_arm_smmu_ids[] = {
+	{ .name = "arm-smmu-v3" },
+	{ },
+};
+
 static struct platform_driver kvm_arm_smmu_driver = {
 	.driver = {
 		.name = "kvm-arm-smmu-v3",
 		.of_match_table = arm_smmu_of_match,
 	},
+	/*
+	 * Use the id_table method for matching this driver with ACPI. It
+	 * normally relies on the driver name, but that would conflict with the
+	 * original driver.
+	 */
+	.id_table = kvm_arm_smmu_ids,
 	.remove = kvm_arm_smmu_remove,
 };
+
+int acpi_iort_count_smmuv3(void);
 
 static int kvm_arm_smmu_array_alloc(void)
 {
@@ -780,6 +793,9 @@ static int kvm_arm_smmu_array_alloc(void)
 		kvm_arm_smmu_count++;
 
 	if (!kvm_arm_smmu_count)
+		kvm_arm_smmu_count = acpi_iort_count_smmuv3();
+
+	if (kvm_arm_smmu_count <= 0)
 		return 0;
 
 	/* Allocate the parameter list shared with the hypervisor */
