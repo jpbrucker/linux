@@ -168,7 +168,6 @@
  *       256 lazy entries per table (each table covers a PCI bus)
  */
 #define STRTAB_L1_SZ_SHIFT		20
-#define STRTAB_SPLIT			8
 
 #define STRTAB_L1_DESC_DWORDS		1
 #define STRTAB_L1_DESC_SPAN		GENMASK_ULL(4, 0)
