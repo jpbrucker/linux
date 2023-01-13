@@ -2156,9 +2156,9 @@ static __le64 *arm_smmu_get_step_for_sid(struct arm_smmu_device *smmu, u32 sid)
 		int idx;
 
 		/* Two-level walk */
-		idx = (sid >> STRTAB_SPLIT) * STRTAB_L1_DESC_DWORDS;
+		idx = (sid >> smmu->strtab_cfg.split) * STRTAB_L1_DESC_DWORDS;
 		l1_desc = &cfg->l1_desc[idx];
-		idx = (sid & ((1 << STRTAB_SPLIT) - 1)) * STRTAB_STE_DWORDS;
+		idx = (sid & ((1 << smmu->strtab_cfg.split) - 1)) * STRTAB_STE_DWORDS;
 		step = &l1_desc->l2ptr[idx];
 	} else {
 		/* Simple linear lookup */
@@ -2439,7 +2439,7 @@ static bool arm_smmu_sid_in_range(struct arm_smmu_device *smmu, u32 sid)
 	unsigned long limit = smmu->strtab_cfg.num_l1_ents;
 
 	if (smmu->features & ARM_SMMU_FEAT_2_LVL_STRTAB)
-		limit *= 1UL << STRTAB_SPLIT;
+		limit *= 1UL << smmu->strtab_cfg.split;
 
 	return sid < limit;
 }
@@ -2460,8 +2460,8 @@ static int arm_smmu_init_sid_strtab(struct arm_smmu_device *smmu, u32 sid)
 		if (ret)
 			return ret;
 
-		desc = &smmu->strtab_cfg.l1_desc[sid >> STRTAB_SPLIT];
-		arm_smmu_init_bypass_stes(desc->l2ptr, 1 << STRTAB_SPLIT,
+		desc = &smmu->strtab_cfg.l1_desc[sid >> smmu->strtab_cfg.split];
+		arm_smmu_init_bypass_stes(desc->l2ptr, 1 << smmu->strtab_cfg.split,
 					  false);
 	}
 
