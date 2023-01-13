@@ -254,11 +254,14 @@ int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu)
 	smmu->sid_bits = FIELD_GET(IDR1_SIDSIZE, reg);
 	smmu->iommu.max_pasids = 1UL << smmu->ssid_bits;
 
+	/* Use one page per level-2 table */
+	smmu->strtab_cfg.split = PAGE_SHIFT - (ilog2(STRTAB_STE_DWORDS) + 3);
+
 	/*
 	 * If the SMMU supports fewer bits than would fill a single L2 stream
 	 * table, use a linear table instead.
 	 */
-	if (smmu->sid_bits <= STRTAB_SPLIT)
+	if (smmu->sid_bits <= smmu->strtab_cfg.split)
 		smmu->features &= ~ARM_SMMU_FEAT_2_LVL_STRTAB;
 
 	/* IDR3 */
@@ -470,15 +473,17 @@ int arm_smmu_init_l2_strtab(struct arm_smmu_device *smmu, u32 sid)
 	size_t size;
 	void *strtab;
 	struct arm_smmu_strtab_cfg *cfg = &smmu->strtab_cfg;
-	struct arm_smmu_strtab_l1_desc *desc = &cfg->l1_desc[sid >> STRTAB_SPLIT];
+	struct arm_smmu_strtab_l1_desc *desc =
+		&cfg->l1_desc[sid >> smmu->strtab_cfg.split];
 
 	if (desc->l2ptr)
 		return 0;
 
-	size = 1 << (STRTAB_SPLIT + ilog2(STRTAB_STE_DWORDS) + 3);
-	strtab = &cfg->strtab[(sid >> STRTAB_SPLIT) * STRTAB_L1_DESC_DWORDS];
+	size = 1 << (smmu->strtab_cfg.split + ilog2(STRTAB_STE_DWORDS) + 3);
+	strtab = &cfg->strtab[(sid >> smmu->strtab_cfg.split) *
+		 STRTAB_L1_DESC_DWORDS];
 
-	desc->span = STRTAB_SPLIT + 1;
+	desc->span = smmu->strtab_cfg.split + 1;
 	desc->l2ptr = dmam_alloc_coherent(smmu->dev, size, &desc->l2ptr_dma,
 					  GFP_KERNEL);
 	if (!desc->l2ptr) {
@@ -520,10 +525,10 @@ static int arm_smmu_init_strtab_2lvl(struct arm_smmu_device *smmu)
 
 	/* Calculate the L1 size, capped to the SIDSIZE. */
 	size = STRTAB_L1_SZ_SHIFT - (ilog2(STRTAB_L1_DESC_DWORDS) + 3);
-	size = min(size, smmu->sid_bits - STRTAB_SPLIT);
+	size = min(size, smmu->sid_bits - smmu->strtab_cfg.split);
 	cfg->num_l1_ents = 1 << size;
 
-	size += STRTAB_SPLIT;
+	size += smmu->strtab_cfg.split;
 	if (size < smmu->sid_bits)
 		dev_warn(smmu->dev,
 			 "2-level strtab only covers %u/%u bits of SID\n",
@@ -543,7 +548,7 @@ static int arm_smmu_init_strtab_2lvl(struct arm_smmu_device *smmu)
 	/* Configure strtab_base_cfg for 2 levels */
 	reg  = FIELD_PREP(STRTAB_BASE_CFG_FMT, STRTAB_BASE_CFG_FMT_2LVL);
 	reg |= FIELD_PREP(STRTAB_BASE_CFG_LOG2SIZE, size);
-	reg |= FIELD_PREP(STRTAB_BASE_CFG_SPLIT, STRTAB_SPLIT);
+	reg |= FIELD_PREP(STRTAB_BASE_CFG_SPLIT, smmu->strtab_cfg.split);
 	cfg->strtab_base_cfg = reg;
 
 	return arm_smmu_init_l1_strtab(smmu);
