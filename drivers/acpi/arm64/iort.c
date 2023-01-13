@@ -40,6 +40,8 @@ struct iort_fwnode {
 static LIST_HEAD(iort_fwnode_list);
 static DEFINE_SPINLOCK(iort_fwnode_lock);
 
+static int iort_smmuv3_count;
+
 /**
  * iort_set_fwnode() - Create iort_fwnode and use it to register
  *		       iommu data in the iort_fwnode_list
@@ -1546,6 +1548,8 @@ static void __init arm_smmu_v3_init_resources(struct resource *res,
 					       ACPI_EDGE_SENSITIVE,
 					       &res[num_res++]);
 	}
+
+	iort_smmuv3_count++;
 }
 
 static void __init arm_smmu_v3_dma_configure(struct device *dev,
@@ -1973,6 +1977,11 @@ void __init acpi_iort_init(void)
 	}
 
 	iort_init_platform_devices();
+}
+
+int acpi_iort_count_smmuv3(void)
+{
+	return iort_smmuv3_count;
 }
 
 #ifdef CONFIG_ZONE_DMA
