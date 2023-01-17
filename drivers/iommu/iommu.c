@@ -247,12 +247,15 @@ EXPORT_SYMBOL_GPL(iommu_device_register);
 
 void iommu_device_unregister(struct iommu_device *iommu)
 {
-	for (int i = 0; i < ARRAY_SIZE(iommu_buses); i++)
-		bus_for_each_dev(iommu_buses[i], NULL, iommu, remove_iommu_group);
-
 	spin_lock(&iommu_device_lock);
 	list_del(&iommu->list);
 	spin_unlock(&iommu_device_lock);
+
+	for (int i = 0; i < ARRAY_SIZE(iommu_buses); i++) {
+		bus_for_each_dev(iommu_buses[i], NULL, iommu, remove_iommu_group);
+		if (list_empty(&iommu_device_list))
+			iommu_buses[i]->iommu_ops = NULL;
+	}
 }
 EXPORT_SYMBOL_GPL(iommu_device_unregister);
 
