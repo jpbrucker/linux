@@ -152,7 +152,6 @@ static int smmu_send_cmd(struct hyp_arm_smmu_v3_device *smmu,
 	return smmu_sync_cmd(smmu);
 }
 
-__maybe_unused
 static int smmu_sync_ste(struct hyp_arm_smmu_v3_device *smmu, u32 sid)
 {
 	struct arm_smmu_cmdq_ent cmd = {
@@ -194,7 +193,6 @@ static int smmu_alloc_l2_strtab(struct hyp_arm_smmu_v3_device *smmu, u32 idx)
 	return 0;
 }
 
-__maybe_unused
 static u64 *smmu_get_ste_ptr(struct hyp_arm_smmu_v3_device *smmu, u32 sid)
 {
 	u32 idx;
@@ -382,6 +380,68 @@ err_disable_cmdq:
 	return smmu_write_cr0(smmu, 0);
 }
 
+static struct hyp_arm_smmu_v3_device *to_smmu(struct kvm_hyp_iommu *iommu)
+{
+	return container_of(iommu, struct hyp_arm_smmu_v3_device, iommu);
+}
+
+static void smmu_tlb_flush_all(void *cookie)
+{
+	struct kvm_iommu_tlb_cookie *data = cookie;
+	struct hyp_arm_smmu_v3_device *smmu = to_smmu(data->iommu);
+	struct arm_smmu_cmdq_ent cmd = {
+		.opcode = CMDQ_OP_TLBI_S12_VMALL,
+		.tlbi.vmid = data->domain_id,
+	};
+
+	WARN_ON(smmu_send_cmd(smmu, &cmd));
+}
+
+static void smmu_tlb_inv_range(struct kvm_iommu_tlb_cookie *data,
+			       unsigned long iova, size_t size, size_t granule,
+			       bool leaf)
+{
+	struct hyp_arm_smmu_v3_device *smmu = to_smmu(data->iommu);
+	unsigned long end = iova + size;
+	struct arm_smmu_cmdq_ent cmd = {
+		.opcode = CMDQ_OP_TLBI_S2_IPA,
+		.tlbi.vmid = data->domain_id,
+		.tlbi.leaf = leaf,
+	};
+
+	/*
+	 * There are no mappings at high addresses since we don't use TTB1, so
+	 * no overflow possible.
+	 */
+	BUG_ON(end < iova);
+
+	while (iova < end) {
+		cmd.tlbi.addr = iova;
+		WARN_ON(smmu_send_cmd(smmu, &cmd));
+		BUG_ON(iova + granule < iova);
+		iova += granule;
+	}
+}
+
+static void smmu_tlb_flush_walk(unsigned long iova, size_t size,
+				size_t granule, void *cookie)
+{
+	smmu_tlb_inv_range(cookie, iova, size, granule, false);
+}
+
+static void smmu_tlb_add_page(struct iommu_iotlb_gather *gather,
+			      unsigned long iova, size_t granule,
+			      void *cookie)
+{
+	smmu_tlb_inv_range(cookie, iova, granule, granule, true);
+}
+
+static const struct iommu_flush_ops smmu_tlb_ops = {
+	.tlb_flush_all	= smmu_tlb_flush_all,
+	.tlb_flush_walk = smmu_tlb_flush_walk,
+	.tlb_add_page	= smmu_tlb_add_page,
+};
+
 static int smmu_init_device(struct hyp_arm_smmu_v3_device *smmu)
 {
 	int ret;
@@ -393,6 +453,14 @@ static int smmu_init_device(struct hyp_arm_smmu_v3_device *smmu)
 					     &smmu->base);
 	if (IS_ERR(smmu->base))
 		return PTR_ERR(smmu->base);
+
+	smmu->iommu.pgtable_cfg.tlb = &smmu_tlb_ops;
+
+	ret = kvm_arm_io_pgtable_init(&smmu->iommu.pgtable_cfg, &smmu->pgtable);
+	if (ret)
+		return ret;
+
+	smmu->iommu.pgtable = &smmu->pgtable.iop;
 
 	ret = smmu_init_registers(smmu);
 	if (ret)
@@ -406,13 +474,21 @@ static int smmu_init_device(struct hyp_arm_smmu_v3_device *smmu)
 	if (ret)
 		return ret;
 
-	return smmu_reset_device(smmu);
+	ret = smmu_reset_device(smmu);
+	if (ret)
+		return ret;
+
+	return kvm_iommu_init_device(&smmu->iommu);
 }
 
 static int smmu_init(void)
 {
 	int ret;
 	struct hyp_arm_smmu_v3_device *smmu;
+
+	ret = kvm_iommu_init();
+	if (ret)
+		return ret;
 
 	ret = pkvm_create_mappings(kvm_hyp_arm_smmu_v3_smmus,
 				   kvm_hyp_arm_smmu_v3_smmus +
@@ -430,8 +506,105 @@ static int smmu_init(void)
 	return 0;
 }
 
+static struct kvm_hyp_iommu *smmu_id_to_iommu(pkvm_handle_t smmu_id)
+{
+	if (smmu_id >= kvm_hyp_arm_smmu_v3_count)
+		return NULL;
+	smmu_id = array_index_nospec(smmu_id, kvm_hyp_arm_smmu_v3_count);
+
+	return &kvm_hyp_arm_smmu_v3_smmus[smmu_id].iommu;
+}
+
+static int smmu_attach_dev(struct kvm_hyp_iommu *iommu, pkvm_handle_t domain_id,
+			   struct kvm_hyp_iommu_domain *domain, u32 sid)
+{
+	int i;
+	int ret;
+	u64 *dst;
+	struct io_pgtable_cfg *cfg;
+	u64 ts, sl, ic, oc, sh, tg, ps;
+	u64 ent[STRTAB_STE_DWORDS] = {};
+	struct hyp_arm_smmu_v3_device *smmu = to_smmu(iommu);
+
+	dst = smmu_get_ste_ptr(smmu, sid);
+	if (!dst || dst[0])
+		return -EINVAL;
+
+	cfg = &smmu->pgtable.iop.cfg;
+	ps = cfg->arm_lpae_s2_cfg.vtcr.ps;
+	tg = cfg->arm_lpae_s2_cfg.vtcr.tg;
+	sh = cfg->arm_lpae_s2_cfg.vtcr.sh;
+	oc = cfg->arm_lpae_s2_cfg.vtcr.orgn;
+	ic = cfg->arm_lpae_s2_cfg.vtcr.irgn;
+	sl = cfg->arm_lpae_s2_cfg.vtcr.sl;
+	ts = cfg->arm_lpae_s2_cfg.vtcr.tsz;
+
+	ent[0] = STRTAB_STE_0_V |
+		 FIELD_PREP(STRTAB_STE_0_CFG, STRTAB_STE_0_CFG_S2_TRANS);
+	ent[1] = FIELD_PREP(STRTAB_STE_1_SHCFG, STRTAB_STE_1_SHCFG_INCOMING);
+	ent[2] = FIELD_PREP(STRTAB_STE_2_VTCR,
+			FIELD_PREP(STRTAB_STE_2_VTCR_S2PS, ps) |
+			FIELD_PREP(STRTAB_STE_2_VTCR_S2TG, tg) |
+			FIELD_PREP(STRTAB_STE_2_VTCR_S2SH0, sh) |
+			FIELD_PREP(STRTAB_STE_2_VTCR_S2OR0, oc) |
+			FIELD_PREP(STRTAB_STE_2_VTCR_S2IR0, ic) |
+			FIELD_PREP(STRTAB_STE_2_VTCR_S2SL0, sl) |
+			FIELD_PREP(STRTAB_STE_2_VTCR_S2T0SZ, ts)) |
+		 FIELD_PREP(STRTAB_STE_2_S2VMID, domain_id) |
+		 STRTAB_STE_2_S2AA64;
+	ent[3] = hyp_virt_to_phys(domain->pgd) & STRTAB_STE_3_S2TTB_MASK;
+
+	/*
+	 * The SMMU may cache a disabled STE.
+	 * Initialize all fields, sync, then enable it.
+	 */
+	for (i = 1; i < STRTAB_STE_DWORDS; i++)
+		dst[i] = cpu_to_le64(ent[i]);
+
+	ret = smmu_sync_ste(smmu, sid);
+	if (ret)
+		return ret;
+
+	WRITE_ONCE(dst[0], cpu_to_le64(ent[0]));
+	ret = smmu_sync_ste(smmu, sid);
+	if (ret)
+		dst[0] = 0;
+
+	return ret;
+}
+
+static int smmu_detach_dev(struct kvm_hyp_iommu *iommu, pkvm_handle_t domain_id,
+			   struct kvm_hyp_iommu_domain *domain, u32 sid)
+{
+	u64 ttb;
+	u64 *dst;
+	int i, ret;
+	struct hyp_arm_smmu_v3_device *smmu = to_smmu(iommu);
+
+	dst = smmu_get_ste_ptr(smmu, sid);
+	if (!dst)
+		return -ENODEV;
+
+	ttb = dst[3] & STRTAB_STE_3_S2TTB_MASK;
+
+	dst[0] = 0;
+	ret = smmu_sync_ste(smmu, sid);
+	if (ret)
+		return ret;
+
+	for (i = 1; i < STRTAB_STE_DWORDS; i++)
+		dst[i] = 0;
+
+	return smmu_sync_ste(smmu, sid);
+}
+
 static struct kvm_iommu_ops smmu_ops = {
 	.init				= smmu_init,
+	.get_iommu_by_id		= smmu_id_to_iommu,
+	.alloc_iopt			= kvm_arm_io_pgtable_alloc,
+	.free_iopt			= kvm_arm_io_pgtable_free,
+	.attach_dev			= smmu_attach_dev,
+	.detach_dev			= smmu_detach_dev,
 };
 
 int kvm_arm_smmu_v3_register(void)
