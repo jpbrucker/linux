@@ -60,6 +60,9 @@ int pci_host_common_probe(struct platform_device *pdev)
 	if (!ops)
 		return -ENODEV;
 
+	/* FIXME! */
+	pci_request_acs();
+
 	bridge = devm_pci_alloc_host_bridge(dev, 0);
 	if (!bridge)
 		return -ENOMEM;
