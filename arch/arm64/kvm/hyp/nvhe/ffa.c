@@ -30,6 +30,8 @@
 #include <linux/arm_ffa.h>
 #include <asm/kvm_pkvm.h>
 
+#include <kvm/arm_hypercalls.h>
+
 #include <nvhe/ffa.h>
 #include <nvhe/mem_protect.h>
 #include <nvhe/memory.h>
@@ -682,6 +684,43 @@ bool kvm_host_ffa_handler(struct kvm_cpu_context *host_ctxt)
 out_handled:
 	ffa_set_retval(host_ctxt, &res);
 	return true;
+}
+
+int kvm_guest_ffa_handler(struct pkvm_hyp_vcpu *hyp_vcpu, u64 *exit_code)
+{
+	struct kvm_vcpu *vcpu = &hyp_vcpu->vcpu;
+	u32 func_id = smccc_get_function(vcpu);
+	struct kvm_cpu_context *ctxt = &vcpu->arch.ctxt;
+	struct arm_smccc_res res;
+	int ret = 0;
+
+	switch (func_id) {
+	case FFA_FEATURES:
+		if (!do_ffa_features(&res, ctxt))
+			return -EPERM;
+		goto out_handled;
+	/* Memory management */
+	case FFA_FN64_RXTX_MAP:
+	case FFA_RXTX_UNMAP:
+	case FFA_MEM_SHARE:
+	case FFA_FN64_MEM_SHARE:
+	case FFA_MEM_RECLAIM:
+	case FFA_MEM_LEND:
+	case FFA_FN64_MEM_LEND:
+	case FFA_MEM_FRAG_TX:
+		break;
+	}
+
+	/* If this is not an FF-A call we should filter it before forwarding
+	 * it to Trustzone.
+	 */
+	if (ffa_call_supported(func_id))
+		return 1;
+
+	ffa_to_smccc_error(&res, FFA_RET_NOT_SUPPORTED);
+out_handled:
+	ffa_set_retval(ctxt, &res);
+	return ret;
 }
 
 int hyp_ffa_init(void *pages)

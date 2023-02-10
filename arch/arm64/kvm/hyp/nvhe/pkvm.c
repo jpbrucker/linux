@@ -7,12 +7,15 @@
 #include <linux/kvm_host.h>
 #include <linux/mm.h>
 
+#include <hyp/adjust_pc.h>
+
 #include <kvm/arm_hypercalls.h>
 #include <kvm/arm_psci.h>
 
 #include <asm/kvm_emulate.h>
 
 #include <nvhe/alloc.h>
+#include <nvhe/ffa.h>
 #include <nvhe/mem_protect.h>
 #include <nvhe/memory.h>
 #include <nvhe/mm.h>
@@ -31,6 +34,8 @@ unsigned int kvm_arm_vmid_bits;
  * protected KVM is enabled, but for both protected and non-protected VMs.
  */
 static DEFINE_PER_CPU(struct pkvm_hyp_vcpu *, loaded_hyp_vcpu);
+
+void __kvm_hyp_host_forward_smc(struct kvm_cpu_context *guest_ctxt);
 
 /*
  * Host FPSIMD state. Written to when the guest accesses its own FPSIMD state,
@@ -1486,6 +1491,32 @@ static bool pkvm_memrelinquish_call(struct pkvm_hyp_vcpu *hyp_vcpu)
 out_guest_err:
 	smccc_set_retval(vcpu, SMCCC_RET_INVALID_PARAMETER, 0, 0, 0);
 	return true;
+}
+
+bool kvm_guest_filter_smc64(struct kvm_vcpu *vcpu)
+{
+	struct kvm_cpu_context *ctxt = &vcpu->arch.ctxt;
+
+	// TODO: additional filtering on the SMC calls allowed by the guest
+	__kvm_hyp_host_forward_smc(ctxt);
+	return true;
+}
+
+bool kvm_handle_pvm_smc64(struct kvm_vcpu *vcpu, u64 *exit_code)
+{
+	u32 fn = smccc_get_function(vcpu);
+	struct pkvm_hyp_vcpu *hyp_vcpu;
+	bool handled = true;
+	int ret = -1;
+
+	hyp_vcpu = container_of(vcpu, struct pkvm_hyp_vcpu, vcpu);
+	if (is_ffa_call(fn))
+		ret = kvm_guest_ffa_handler(hyp_vcpu, exit_code);
+	if (ret != 0)
+		handled = kvm_guest_filter_smc64(vcpu);
+
+	__kvm_skip_instr(vcpu);
+	return handled;
 }
 
 /*
