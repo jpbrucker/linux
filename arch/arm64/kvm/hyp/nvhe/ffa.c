@@ -172,7 +172,8 @@ static void ffa_retrieve_req(struct arm_smccc_res *res, u32 len)
 }
 
 static void do_ffa_rxtx_map(struct arm_smccc_res *res,
-			    struct kvm_cpu_context *ctxt)
+			    struct kvm_cpu_context *ctxt,
+			    u64 vmid)
 {
 	DECLARE_REG(phys_addr_t, tx, ctxt, 1);
 	DECLARE_REG(phys_addr_t, rx, ctxt, 2);
@@ -186,6 +187,11 @@ static void do_ffa_rxtx_map(struct arm_smccc_res *res,
 	}
 
 	if (!PAGE_ALIGNED(tx) || !PAGE_ALIGNED(rx)) {
+		ret = FFA_RET_INVALID_PARAMETERS;
+		goto out;
+	}
+
+	if (vmid >= KVM_MAX_PVMS) {
 		ret = FFA_RET_INVALID_PARAMETERS;
 		goto out;
 	}
@@ -251,7 +257,8 @@ err_unmap:
 }
 
 static void do_ffa_rxtx_unmap(struct arm_smccc_res *res,
-			      struct kvm_cpu_context *ctxt)
+			      struct kvm_cpu_context *ctxt,
+			      u64 vmid)
 {
 	DECLARE_REG(u32, id, ctxt, 1);
 	int ret = 0;
@@ -352,7 +359,8 @@ static int ffa_host_unshare_ranges(struct ffa_mem_region_addr_range *ranges,
 }
 
 static void do_ffa_mem_frag_tx(struct arm_smccc_res *res,
-			       struct kvm_cpu_context *ctxt)
+			       struct kvm_cpu_context *ctxt,
+			       u64 vmid)
 {
 	DECLARE_REG(u32, handle_lo, ctxt, 1);
 	DECLARE_REG(u32, handle_hi, ctxt, 2);
@@ -411,7 +419,8 @@ out:
 
 static __always_inline void do_ffa_mem_xfer(const u64 func_id,
 					    struct arm_smccc_res *res,
-					    struct kvm_cpu_context *ctxt)
+					    struct kvm_cpu_context *ctxt,
+					    u64 vmid)
 {
 	DECLARE_REG(u32, len, ctxt, 1);
 	DECLARE_REG(u32, fraglen, ctxt, 2);
@@ -493,7 +502,8 @@ err_unshare:
 }
 
 static void do_ffa_mem_reclaim(struct arm_smccc_res *res,
-			       struct kvm_cpu_context *ctxt)
+			       struct kvm_cpu_context *ctxt,
+			       u64 vmid)
 {
 	DECLARE_REG(u32, handle_lo, ctxt, 1);
 	DECLARE_REG(u32, handle_hi, ctxt, 2);
@@ -656,24 +666,24 @@ bool kvm_host_ffa_handler(struct kvm_cpu_context *host_ctxt)
 		goto out_handled;
 	/* Memory management */
 	case FFA_FN64_RXTX_MAP:
-		do_ffa_rxtx_map(&res, host_ctxt);
+		do_ffa_rxtx_map(&res, host_ctxt, 0);
 		goto out_handled;
 	case FFA_RXTX_UNMAP:
-		do_ffa_rxtx_unmap(&res, host_ctxt);
+		do_ffa_rxtx_unmap(&res, host_ctxt, 0);
 		goto out_handled;
 	case FFA_MEM_SHARE:
 	case FFA_FN64_MEM_SHARE:
-		do_ffa_mem_xfer(FFA_FN64_MEM_SHARE, &res, host_ctxt);
+		do_ffa_mem_xfer(FFA_FN64_MEM_SHARE, &res, host_ctxt, 0);
 		goto out_handled;
 	case FFA_MEM_RECLAIM:
-		do_ffa_mem_reclaim(&res, host_ctxt);
+		do_ffa_mem_reclaim(&res, host_ctxt, 0);
 		goto out_handled;
 	case FFA_MEM_LEND:
 	case FFA_FN64_MEM_LEND:
-		do_ffa_mem_xfer(FFA_FN64_MEM_LEND, &res, host_ctxt);
+		do_ffa_mem_xfer(FFA_FN64_MEM_LEND, &res, host_ctxt, 0);
 		goto out_handled;
 	case FFA_MEM_FRAG_TX:
-		do_ffa_mem_frag_tx(&res, host_ctxt);
+		do_ffa_mem_frag_tx(&res, host_ctxt, 0);
 		goto out_handled;
 	}
 
@@ -691,8 +701,11 @@ int kvm_guest_ffa_handler(struct pkvm_hyp_vcpu *hyp_vcpu, u64 *exit_code)
 	struct kvm_vcpu *vcpu = &hyp_vcpu->vcpu;
 	u32 func_id = smccc_get_function(vcpu);
 	struct kvm_cpu_context *ctxt = &vcpu->arch.ctxt;
+	struct kvm_s2_mmu *mmu = vcpu->arch.hw_mmu;
 	struct arm_smccc_res res;
 	int ret = 0;
+	struct kvm_vmid *kvm_vmid = &mmu->vmid;
+	u64 vmid = atomic64_read(&kvm_vmid->id);
 
 	switch (func_id) {
 	case FFA_FEATURES:
@@ -701,6 +714,8 @@ int kvm_guest_ffa_handler(struct pkvm_hyp_vcpu *hyp_vcpu, u64 *exit_code)
 		goto out_handled;
 	/* Memory management */
 	case FFA_FN64_RXTX_MAP:
+		do_ffa_rxtx_map(&res, ctxt, vmid);
+		goto out_handled;
 	case FFA_RXTX_UNMAP:
 	case FFA_MEM_SHARE:
 	case FFA_FN64_MEM_SHARE:
