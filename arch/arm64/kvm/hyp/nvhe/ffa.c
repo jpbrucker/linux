@@ -180,44 +180,12 @@ static void ffa_retrieve_req(struct arm_smccc_res *res, u32 len)
 			  res);
 }
 
-static void do_ffa_rxtx_map(struct arm_smccc_res *res,
-			    struct kvm_cpu_context *ctxt,
-			    u64 vmid)
+static int host_share_hyp_buffers(struct kvm_cpu_context *ctxt)
 {
 	DECLARE_REG(phys_addr_t, tx, ctxt, 1);
 	DECLARE_REG(phys_addr_t, rx, ctxt, 2);
-	DECLARE_REG(u32, npages, ctxt, 3);
-	int ret = 0;
+	int ret;
 	void *rx_virt, *tx_virt;
-
-	if (npages != (KVM_FFA_MBOX_NR_PAGES * PAGE_SIZE) / FFA_PAGE_SIZE) {
-		ret = FFA_RET_INVALID_PARAMETERS;
-		goto out;
-	}
-
-	if (!PAGE_ALIGNED(tx) || !PAGE_ALIGNED(rx)) {
-		ret = FFA_RET_INVALID_PARAMETERS;
-		goto out;
-	}
-
-	if (vmid >= KVM_MAX_PVMS) {
-		ret = FFA_RET_INVALID_PARAMETERS;
-		goto out;
-	}
-
-	hyp_spin_lock(&hyp_buffers.lock);
-	if (non_secure_el1_buffers[vmid].tx) {
-		ret = FFA_RET_DENIED;
-		goto out_unlock;
-	}
-
-	/*
-	 * Map our hypervisor buffers into the SPMD before mapping and
-	 * pinning the host buffers in our own address space.
-	 */
-	ret = ffa_map_hyp_buffers(npages);
-	if (ret)
-		goto out_unlock;
 
 	ret = __pkvm_host_share_hyp(hyp_phys_to_pfn(tx));
 	if (ret) {
@@ -245,15 +213,10 @@ static void do_ffa_rxtx_map(struct arm_smccc_res *res,
 		goto err_unpin_tx;
 	}
 
-	non_secure_el1_buffers[vmid].tx = tx_virt;
-	non_secure_el1_buffers[vmid].rx = rx_virt;
+	non_secure_el1_buffers[0].tx = tx_virt;
+	non_secure_el1_buffers[0].rx = rx_virt;
 	hyp_buffer_refcnt++;
-out_unlock:
-	hyp_spin_unlock(&hyp_buffers.lock);
-out:
-	ffa_to_smccc_res(res, ret);
-	return;
-
+	return ret;
 err_unpin_tx:
 	hyp_unpin_shared_mem(tx_virt, tx_virt + 1);
 err_unshare_rx:
@@ -262,7 +225,50 @@ err_unshare_tx:
 	__pkvm_host_unshare_hyp(hyp_phys_to_pfn(tx));
 err_unmap:
 	ffa_unmap_hyp_buffers();
-	goto out_unlock;
+	return ret;
+}
+
+static void do_ffa_rxtx_map(struct arm_smccc_res *res,
+			    struct kvm_cpu_context *ctxt,
+			    u64 vmid)
+{
+	DECLARE_REG(phys_addr_t, tx, ctxt, 1);
+	DECLARE_REG(phys_addr_t, rx, ctxt, 2);
+	DECLARE_REG(u32, npages, ctxt, 3);
+	int ret = 0;
+
+	if (npages != (KVM_FFA_MBOX_NR_PAGES * PAGE_SIZE) / FFA_PAGE_SIZE) {
+		ret = FFA_RET_INVALID_PARAMETERS;
+		goto out;
+	}
+
+	if (!PAGE_ALIGNED(tx) || !PAGE_ALIGNED(rx)) {
+		ret = FFA_RET_INVALID_PARAMETERS;
+		goto out;
+	}
+
+	if (vmid >= KVM_MAX_PVMS) {
+		ret = FFA_RET_INVALID_PARAMETERS;
+		goto out;
+	}
+
+	hyp_spin_lock(&hyp_buffers.lock);
+	if (non_secure_el1_buffers[vmid].tx) {
+		ret = FFA_RET_DENIED;
+		goto out_unlock;
+	}
+	ret = ffa_map_hyp_buffers(npages);
+	if (ret)
+		goto out_unlock;
+
+	if (vmid == 0)
+		ret = host_share_hyp_buffers(ctxt);
+
+out_unlock:
+	hyp_spin_unlock(&hyp_buffers.lock);
+out:
+	ffa_to_smccc_res(res, ret);
+	return;
 }
 
 static void do_ffa_rxtx_unmap(struct arm_smccc_res *res,
