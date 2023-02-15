@@ -228,6 +228,82 @@ err_unmap:
 	return ret;
 }
 
+static int guest_share_hyp_buffers(struct kvm_cpu_context *ctxt, u64 vmid)
+{
+	DECLARE_REG(phys_addr_t, tx, ctxt, 1);
+	DECLARE_REG(phys_addr_t, rx, ctxt, 2);
+	struct kvm_vcpu *vcpu = ctxt->__hyp_running_vcpu;
+	struct pkvm_hyp_vcpu *pkvm_vcpu;
+	struct pkvm_hyp_vm *vm;
+	int ret;
+	void *rx_virt, *tx_virt;
+	phys_addr_t phys;
+	kvm_pte_t pte;
+
+	if (!vcpu)
+		vcpu = container_of(ctxt, struct kvm_vcpu, arch.ctxt);
+
+	pkvm_vcpu = container_of(vcpu, struct pkvm_hyp_vcpu, vcpu);
+	ret = __pkvm_guest_share_hyp(pkvm_vcpu, tx);
+	if (ret) {
+		ret = FFA_RET_INVALID_PARAMETERS;
+		goto err_unmap;
+	}
+
+	ret = __pkvm_guest_share_hyp(pkvm_vcpu, rx);
+	if (ret) {
+		ret = FFA_RET_INVALID_PARAMETERS;
+		goto err_unshare_tx;
+	}
+
+	/* Convert the guest IPA address to hyp virtual address */
+	vm = pkvm_hyp_vcpu_to_hyp_vm(pkvm_vcpu);
+	ret = kvm_pgtable_get_leaf(&vm->pgt, tx, &pte, NULL);
+	if (ret) {
+		ret = FFA_RET_INVALID_PARAMETERS;
+		goto err_unshare_rx;
+	}
+
+	phys = kvm_pte_to_phys(pte);
+	tx_virt = __hyp_va(phys);
+	ret = hyp_pin_shared_mem_from_guest(pkvm_vcpu, (void *)tx, tx_virt,
+					    tx_virt + 1);
+	if (ret) {
+		ret = FFA_RET_INVALID_PARAMETERS;
+		goto err_unshare_rx;
+	}
+
+	ret = kvm_pgtable_get_leaf(&vm->pgt, rx, &pte, NULL);
+	if (ret) {
+		ret = FFA_RET_INVALID_PARAMETERS;
+		goto err_unpin_tx;
+	}
+
+	phys = kvm_pte_to_phys(pte);
+	rx_virt = __hyp_va(phys);
+	ret = hyp_pin_shared_mem_from_guest(pkvm_vcpu, (void *)rx, rx_virt,
+					    rx_virt + 1);
+	if (ret) {
+		ret = FFA_RET_INVALID_PARAMETERS;
+		goto err_unpin_tx;
+	}
+
+	non_secure_el1_buffers[vmid].tx = tx_virt;
+	non_secure_el1_buffers[vmid].rx = rx_virt;
+	hyp_buffer_refcnt++;
+	return ret;
+
+err_unpin_tx:
+	hyp_unpin_shared_mem_from_guest(pkvm_vcpu, tx_virt, tx_virt + 1);
+err_unshare_rx:
+	__pkvm_guest_unshare_hyp(pkvm_vcpu, rx);
+err_unshare_tx:
+	__pkvm_guest_unshare_hyp(pkvm_vcpu, tx);
+err_unmap:
+	ffa_unmap_hyp_buffers();
+	return ret;
+}
+
 static void do_ffa_rxtx_map(struct arm_smccc_res *res,
 			    struct kvm_cpu_context *ctxt,
 			    u64 vmid)
@@ -263,6 +339,8 @@ static void do_ffa_rxtx_map(struct arm_smccc_res *res,
 
 	if (vmid == 0)
 		ret = host_share_hyp_buffers(ctxt);
+	else
+		ret = guest_share_hyp_buffers(ctxt, vmid);
 
 out_unlock:
 	hyp_spin_unlock(&hyp_buffers.lock);
