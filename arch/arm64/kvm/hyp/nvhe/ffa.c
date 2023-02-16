@@ -354,7 +354,16 @@ static void do_ffa_rxtx_unmap(struct arm_smccc_res *res,
 			      u64 vmid)
 {
 	DECLARE_REG(u32, id, ctxt, 1);
+	DECLARE_REG(phys_addr_t, tx, ctxt, 2);
+	DECLARE_REG(phys_addr_t, rx, ctxt, 3);
 	int ret = 0;
+	u64 pfn;
+	struct kvm_vcpu *vcpu = ctxt->__hyp_running_vcpu;
+	struct pkvm_hyp_vcpu *pkvm_vcpu;
+	struct pkvm_hyp_vm *vm;
+	void *rx_virt, *tx_virt;
+	phys_addr_t phys;
+	kvm_pte_t pte;
 
 	if (id != HOST_FFA_ID) {
 		ret = FFA_RET_INVALID_PARAMETERS;
@@ -367,15 +376,62 @@ static void do_ffa_rxtx_unmap(struct arm_smccc_res *res,
 		goto out_unlock;
 	}
 
-	hyp_unpin_shared_mem(non_secure_el1_buffers[vmid].tx,
-			     non_secure_el1_buffers[vmid].tx + 1);
-	WARN_ON(__pkvm_host_unshare_hyp(hyp_virt_to_pfn(non_secure_el1_buffers[vmid].tx)));
-	non_secure_el1_buffers[vmid].tx = NULL;
+	if (vmid == 0) {
+		hyp_unpin_shared_mem(non_secure_el1_buffers[vmid].tx,
+				     non_secure_el1_buffers[vmid].tx + 1);
+		hyp_unpin_shared_mem(non_secure_el1_buffers[vmid].rx,
+				     non_secure_el1_buffers[vmid].rx + 1);
+		pfn = hyp_virt_to_pfn(non_secure_el1_buffers[vmid].tx);
+		WARN_ON(__pkvm_host_unshare_hyp(pfn));
 
-	hyp_unpin_shared_mem(non_secure_el1_buffers[vmid].rx,
-			     non_secure_el1_buffers[vmid].rx + 1);
-	WARN_ON(__pkvm_host_unshare_hyp(hyp_virt_to_pfn(non_secure_el1_buffers[vmid].rx)));
+		pfn = hyp_virt_to_pfn(non_secure_el1_buffers[vmid].rx);
+		WARN_ON(__pkvm_host_unshare_hyp(pfn));
+	} else {
+		/* For guests we need to convert the HYP va to a guest IPA
+		 *
+		 * Note: this is tricky because we need a reverse mapping:
+		 * guest stage2: PHYS -> IPA and can be avoided if we
+		 * pass the IPA address of the buffers in the FFA_RXTX_UNMAP
+		 * instead of passing the ID of the buffer.
+		 */
+		WARN_ON(tx == 0 ||  rx == 0);
+
+		/* Note: we should not blindly unshare these buffers with
+		 * the hyp. First check that the received buffer addresses
+		 * are part of the guest.
+		 */
+		if (!vcpu)
+			vcpu = container_of(ctxt, struct kvm_vcpu, arch.ctxt);
+
+		pkvm_vcpu = container_of(vcpu, struct pkvm_hyp_vcpu, vcpu);
+		vm = pkvm_hyp_vcpu_to_hyp_vm(pkvm_vcpu);
+		WARN_ON(kvm_pgtable_get_leaf(&vm->pgt, tx, &pte, NULL));
+
+		phys = kvm_pte_to_phys(pte);
+		tx_virt = __hyp_va(phys);
+
+		WARN_ON(non_secure_el1_buffers[vmid].tx != tx_virt);
+		WARN_ON(kvm_pgtable_get_leaf(&vm->pgt, rx, &pte, NULL));
+
+		phys = kvm_pte_to_phys(pte);
+		rx_virt = __hyp_va(phys);
+
+		WARN_ON(non_secure_el1_buffers[vmid].rx != rx_virt);
+
+		/* Now it's safe to unshare the buffers from guest */
+		hyp_unpin_shared_mem_from_guest(pkvm_vcpu,
+						non_secure_el1_buffers[vmid].tx,
+						non_secure_el1_buffers[vmid].tx + 1);
+		hyp_unpin_shared_mem_from_guest(pkvm_vcpu,
+						non_secure_el1_buffers[vmid].rx,
+						non_secure_el1_buffers[vmid].rx + 1);
+
+		WARN_ON(__pkvm_guest_unshare_hyp(pkvm_vcpu, tx));
+		WARN_ON(__pkvm_guest_unshare_hyp(pkvm_vcpu, rx));
+	}
+
 	non_secure_el1_buffers[vmid].rx = NULL;
+	non_secure_el1_buffers[vmid].tx = NULL;
 
 	if (hyp_buffer_refcnt > 0)
 		hyp_buffer_refcnt--;
@@ -815,6 +871,8 @@ int kvm_guest_ffa_handler(struct pkvm_hyp_vcpu *hyp_vcpu, u64 *exit_code)
 		do_ffa_rxtx_map(&res, ctxt, vmid);
 		goto out_handled;
 	case FFA_RXTX_UNMAP:
+		do_ffa_rxtx_unmap(&res, ctxt, vmid);
+		goto out_handled;
 	case FFA_MEM_SHARE:
 	case FFA_FN64_MEM_SHARE:
 	case FFA_MEM_RECLAIM:
