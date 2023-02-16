@@ -1746,6 +1746,58 @@ int __pkvm_hyp_donate_host(u64 pfn, u64 nr_pages)
 	return ret;
 }
 
+int hyp_pin_shared_mem_from_guest(struct pkvm_hyp_vcpu *vcpu, void *guest_ipa_from,
+				  void *hyp_va_from, void *hyp_va_to)
+{
+	int ret;
+	u64 cur, start = ALIGN_DOWN((u64)hyp_va_from, PAGE_SIZE);
+	u64 end = PAGE_ALIGN((u64)hyp_va_to);
+	u64 guest_ipa_from_aligned = ALIGN_DOWN((u64)guest_ipa_from, PAGE_SIZE);
+	u64 size = end - start;
+	struct pkvm_hyp_vm *vm = pkvm_hyp_vcpu_to_hyp_vm(vcpu);
+
+	guest_lock_component(vm);
+	hyp_lock_component();
+
+	ret = __guest_check_page_state_range(vcpu, guest_ipa_from_aligned, size,
+					     PKVM_PAGE_SHARED_OWNED);
+
+	if (ret)
+		goto unlock;
+
+	ret = __hyp_check_page_state_range(start, size,
+					   PKVM_PAGE_SHARED_BORROWED);
+	if (ret)
+		goto unlock;
+
+	for (cur = start; cur < end; cur += PAGE_SIZE)
+		hyp_page_ref_inc(hyp_virt_to_page(cur));
+
+unlock:
+	hyp_unlock_component();
+	guest_unlock_component(vm);
+
+	return ret;
+}
+
+void hyp_unpin_shared_mem_from_guest(struct pkvm_hyp_vcpu *vcpu,
+				     void *hyp_va_from,
+				     void *hyp_va_to)
+{
+	struct pkvm_hyp_vm *vm = pkvm_hyp_vcpu_to_hyp_vm(vcpu);
+	u64 cur, start = ALIGN_DOWN((u64)hyp_va_from, PAGE_SIZE);
+	u64 end = PAGE_ALIGN((u64)hyp_va_to);
+
+	guest_lock_component(vm);
+	hyp_lock_component();
+
+	for (cur = start; cur < end; cur += PAGE_SIZE)
+		hyp_page_ref_dec(hyp_virt_to_page(cur));
+
+	hyp_unlock_component();
+	guest_unlock_component(vm);
+}
+
 int hyp_pin_shared_mem(void *from, void *to)
 {
 	u64 cur, start = ALIGN_DOWN((u64)from, PAGE_SIZE);
