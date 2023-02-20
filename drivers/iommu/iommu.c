@@ -1665,7 +1665,7 @@ static int iommu_group_alloc_default_domain(const struct bus_type *bus,
 	dom = __iommu_domain_alloc(bus, type);
 	if (!dom && type != IOMMU_DOMAIN_DMA) {
 		dom = __iommu_domain_alloc(bus, IOMMU_DOMAIN_DMA);
-		if (dom)
+		if (dom && type != IOMMU_DOMAIN_DMA_FQ)
 			pr_warn("Failed to allocate default IOMMU domain of type %u for group %s - Falling back to IOMMU_DOMAIN_DMA",
 				type, group->name);
 	}
