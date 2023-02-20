@@ -1086,6 +1086,9 @@ static int __guest_get_completer_addr(u64 *completer_addr, phys_addr_t phys,
 	case PKVM_ID_HYP:
 		*completer_addr = (u64)__hyp_va(phys);
 		break;
+	case PKVM_ID_FFA:
+		/* We don't handle secure page tables */
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -1960,6 +1963,60 @@ int __pkvm_host_donate_guest(u64 pfn, u64 gfn, struct pkvm_hyp_vcpu *vcpu)
 
 	guest_unlock_component(vm);
 	host_unlock_component();
+
+	return ret;
+}
+
+int __pkvm_guest_share_ffa(struct pkvm_hyp_vcpu *vcpu, u64 ipa)
+{
+	int ret;
+	struct pkvm_hyp_vm *vm = pkvm_hyp_vcpu_to_hyp_vm(vcpu);
+	struct pkvm_mem_share share = {
+		.tx	= {
+			.nr_pages	= 1,
+			.initiator	= {
+				.id	= PKVM_ID_GUEST,
+				.addr	= ipa,
+				.guest  = {
+					.hyp_vcpu = vcpu,
+				},
+			},
+			.completer	= {
+				.id	= PKVM_ID_FFA,
+			},
+		},
+	};
+
+	guest_lock_component(vm);
+	ret = do_share(&share);
+	guest_unlock_component(vm);
+
+	return ret;
+}
+
+int __pkvm_guest_unshare_ffa(struct pkvm_hyp_vcpu *vcpu, u64 ipa)
+{
+	int ret;
+	struct pkvm_hyp_vm *vm = pkvm_hyp_vcpu_to_hyp_vm(vcpu);
+	struct pkvm_mem_share share = {
+		.tx	= {
+			.nr_pages	= 1,
+			.initiator	= {
+				.id	= PKVM_ID_GUEST,
+				.addr	= ipa,
+				.guest  = {
+					.hyp_vcpu = vcpu,
+				},
+			},
+			.completer	= {
+				.id	= PKVM_ID_FFA,
+			},
+		},
+	};
+
+	guest_lock_component(vm);
+	ret = do_unshare(&share);
+	guest_unlock_component(vm);
 
 	return ret;
 }
