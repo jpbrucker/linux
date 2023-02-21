@@ -512,6 +512,39 @@ static int ffa_host_unshare_ranges(struct ffa_mem_region_addr_range *ranges,
 	return ret;
 }
 
+/* Repaint the guest IPA addresses with PA addresses and break the contiguous
+ * constituents. Return the number of painted constituents or a negative error code.
+ */
+static int ffa_guest_repaint_ipa_ranges(struct ffa_composite_mem_region *reg,
+					struct kvm_cpu_context *ctxt, u64 vmid)
+{
+	return -ENOSYS;
+}
+
+/* Annotate the pagetables of the guest as being shared with FF-A */
+static int ffa_guest_share_ranges(struct ffa_mem_region_addr_range *ranges,
+				  u32 nranges, struct kvm_cpu_context *ctxt,
+				  u64 vmid)
+{
+	return -ENOSYS;
+}
+
+static int ffa_guest_unshare_ranges(struct ffa_mem_region_addr_range *ranges,
+				    u32 nranges, struct kvm_cpu_context *ctxt,
+				    u64 vmid)
+{
+	return -ENOSYS;
+}
+
+/* Verifies if the VM is allowed to do FF-A memory operations */
+static bool is_ffa_id_valid(u16 sender_ffa_id, u64 vmid)
+{
+	if (sender_ffa_id == HOST_FFA_ID)
+		return true;
+
+	return false;
+}
+
 static void do_ffa_mem_frag_tx(struct arm_smccc_res *res,
 			       struct kvm_cpu_context *ctxt,
 			       u64 vmid)
@@ -571,10 +604,10 @@ out:
 	return;
 }
 
-static __always_inline void do_ffa_mem_xfer(const u64 func_id,
-					    struct arm_smccc_res *res,
-					    struct kvm_cpu_context *ctxt,
-					    u64 vmid)
+static __always_inline int do_ffa_mem_xfer(const u64 func_id,
+					   struct arm_smccc_res *res,
+					   struct kvm_cpu_context *ctxt,
+					   u64 vmid)
 {
 	DECLARE_REG(u32, len, ctxt, 1);
 	DECLARE_REG(u32, fraglen, ctxt, 2);
@@ -582,8 +615,9 @@ static __always_inline void do_ffa_mem_xfer(const u64 func_id,
 	DECLARE_REG(u32, npages_mbz, ctxt, 4);
 	struct ffa_composite_mem_region *reg;
 	struct ffa_mem_region *buf;
-	u32 offset, nr_ranges;
-	int ret = 0;
+	u32 offset, nr_ranges, total_pg_cnt;
+	int i, ret = 0, no_painted;
+	size_t adjust_sz = 0, remaining_sz;
 
 	BUILD_BUG_ON(func_id != FFA_FN64_MEM_SHARE &&
 		     func_id != FFA_FN64_MEM_LEND);
@@ -610,7 +644,8 @@ static __always_inline void do_ffa_mem_xfer(const u64 func_id,
 	memcpy(buf, non_secure_el1_buffers[vmid].tx, fraglen);
 
 	offset = buf->ep_mem_access[0].composite_off;
-	if (!offset || buf->ep_count != 1 || buf->sender_id != HOST_FFA_ID) {
+	if (!offset || buf->ep_count != 1 ||
+	    !is_ffa_id_valid(buf->sender_id, vmid)) {
 		ret = FFA_RET_INVALID_PARAMETERS;
 		goto out_unlock;
 	}
@@ -628,9 +663,62 @@ static __always_inline void do_ffa_mem_xfer(const u64 func_id,
 	}
 
 	nr_ranges /= sizeof(reg->constituents[0]);
-	ret = ffa_host_share_ranges(reg->constituents, nr_ranges);
-	if (ret)
+	if (nr_ranges != reg->addr_range_cnt) {
+		ret = FFA_RET_INVALID_PARAMETERS;
 		goto out_unlock;
+	}
+
+	total_pg_cnt = 0;
+	for (i = 0; i < nr_ranges; ++i) {
+		total_pg_cnt += reg->constituents[i].pg_cnt;
+	}
+	if (total_pg_cnt != reg->total_pg_cnt) {
+		ret = FFA_RET_INVALID_PARAMETERS;
+		goto out_unlock;
+	}
+
+	if (vmid == 0) {
+		ret = ffa_host_share_ranges(reg->constituents, nr_ranges);
+		if (ret)
+			goto out_unlock;
+	} else {
+		ret = ffa_guest_share_ranges(reg->constituents, nr_ranges,
+					     ctxt, vmid);
+		if (ret)
+			goto out_unlock;
+
+		no_painted = ffa_guest_repaint_ipa_ranges(reg, ctxt, vmid);
+		if (no_painted < 0 ||
+		    no_painted < reg->addr_range_cnt) {
+			ret = no_painted;
+			goto err_unshare;
+		}
+
+		/* Verify if we need extra space for the broken down contiguous IPA
+		 * range.
+		 */
+		adjust_sz = (no_painted - reg->addr_range_cnt) *
+			sizeof(struct ffa_mem_region_addr_range);
+		remaining_sz = KVM_FFA_MBOX_NR_PAGES * PAGE_SIZE -
+			fraglen;
+
+		if (adjust_sz < remaining_sz) {
+			memcpy(reg->constituents, ffa_desc_buf.buf,
+			       no_painted *
+			       sizeof(struct ffa_mem_region_addr_range));
+		} else {
+			/* There is not enough space inside the mailbox
+			 * buffer after breaking down the contiguous
+			 * constituents.
+			 */
+			ret = FFA_RET_NO_MEMORY;
+			goto err_unshare;
+		}
+
+		fraglen += adjust_sz;
+		len += adjust_sz;
+		reg->addr_range_cnt = no_painted;
+	}
 
 	ffa_mem_xfer(res, func_id, len, fraglen);
 	if (fraglen != len) {
@@ -640,18 +728,45 @@ static __always_inline void do_ffa_mem_xfer(const u64 func_id,
 		if (res->a3 != fraglen)
 			goto err_unshare;
 	} else if (res->a0 != FFA_SUCCESS) {
+		fraglen -= adjust_sz;
 		goto err_unshare;
 	}
 
+	/* TODO: store the associated handle */
 out_unlock:
 	hyp_spin_unlock(&hyp_buffers.lock);
 out:
 	if (ret)
 		ffa_to_smccc_res(res, ret);
-	return;
+
+	return ret;
 
 err_unshare:
-	WARN_ON(ffa_host_unshare_ranges(reg->constituents, nr_ranges));
+	if (vmid == 0) {
+		WARN_ON(ffa_host_unshare_ranges(reg->constituents, nr_ranges));
+	} else {
+		/* This is tricky because we need to copy again the buffer
+		 * from the guest driver and do the verifications one more
+		 * time before removing the annotation from the guest stage-2.
+		 */
+		memcpy(buf, non_secure_el1_buffers[vmid].tx, fraglen);
+
+		offset = buf->ep_mem_access[0].composite_off;
+		WARN_ON(!offset || buf->ep_count != 1 ||
+			!is_ffa_id_valid(buf->sender_id, vmid));
+
+		WARN_ON(fraglen < offset + sizeof(struct ffa_composite_mem_region));
+		reg = (void *)buf + offset;
+		nr_ranges = ((void *)buf + fraglen) -
+			(void *)reg->constituents;
+		WARN_ON(nr_ranges % sizeof(reg->constituents[0]));
+		nr_ranges /= sizeof(reg->constituents[0]);
+
+		WARN_ON(nr_ranges != reg->addr_range_cnt);
+		WARN_ON(ffa_guest_unshare_ranges(reg->constituents, nr_ranges,
+						 ctxt, vmid));
+	}
+
 	goto out_unlock;
 }
 
@@ -875,6 +990,8 @@ int kvm_guest_ffa_handler(struct pkvm_hyp_vcpu *hyp_vcpu, u64 *exit_code)
 		goto out_handled;
 	case FFA_MEM_SHARE:
 	case FFA_FN64_MEM_SHARE:
+		ret = do_ffa_mem_xfer(FFA_FN64_MEM_SHARE, &res, ctxt, vmid);
+		goto out_handled;
 	case FFA_MEM_RECLAIM:
 	case FFA_MEM_LEND:
 	case FFA_FN64_MEM_LEND:
