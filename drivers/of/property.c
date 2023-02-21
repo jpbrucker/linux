@@ -1385,8 +1385,8 @@ static int of_link_property(struct device_node *con_np, const char *prop_name)
 {
 	struct device_node *phandle;
 	const struct supplier_bindings *s = of_supplier_bindings;
-	unsigned int i = 0;
 	bool matched = false;
+	unsigned int i;
 
 	/* Do not stop at first failed link, link all available suppliers. */
 	while (!matched && s->parse_prop) {
@@ -1395,6 +1395,7 @@ static int of_link_property(struct device_node *con_np, const char *prop_name)
 			continue;
 		}
 
+		i = 0;
 		while ((phandle = s->parse_prop(con_np, prop_name, i))) {
 			struct device_node *con_dev_np;
 
