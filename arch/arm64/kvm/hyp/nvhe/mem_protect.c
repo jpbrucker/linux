@@ -18,6 +18,7 @@
 #include <nvhe/memory.h>
 #include <nvhe/mem_protect.h>
 #include <nvhe/mm.h>
+#include <nvhe/ffa.h>
 
 #define KVM_HOST_S2_FLAGS (KVM_PGTABLE_S2_NOFWB | KVM_PGTABLE_S2_IDMAP)
 
@@ -2061,6 +2062,10 @@ int __pkvm_host_reclaim_page(struct pkvm_hyp_vm *vm, u64 pfn, u64 ipa)
 	phys_addr_t phys = hyp_pfn_to_phys(pfn);
 	kvm_pte_t pte;
 	int ret;
+	u64 hyp_va;
+	struct kvm_s2_mmu *mmu;
+	struct kvm_vmid *kvm_vmid;
+	u64 vmid;
 
 	host_lock_component();
 	guest_lock_component(vm);
@@ -2090,7 +2095,56 @@ int __pkvm_host_reclaim_page(struct pkvm_hyp_vm *vm, u64 pfn, u64 ipa)
 		WARN_ON(__host_check_page_state_range(phys, PAGE_SIZE, PKVM_PAGE_SHARED_OWNED));
 		break;
 	case PKVM_PAGE_SHARED_OWNED:
-		WARN_ON(__host_check_page_state_range(phys, PAGE_SIZE, PKVM_PAGE_SHARED_BORROWED));
+		/* TODO: We need a mechanism that can tell us with whom was
+		 *       the page shared with. After we determine this we should
+		 *       do:
+		 * host -> do __host_check_page_state_range
+		 * hyp  -> unshare the page with the hyp
+		 *         if the page is shared with the hyp and is part of
+		 *         the non_secure_el1_buffers, clear its entry.
+		 *
+		 * secure os -> Ask the secure OS to politely return the
+		 *              shared page and unmap it. This should probably
+		 *              be part of the FFA standard.
+		 *
+		 * For the moment we just verify if our beloved page
+		 * was shared with the host, hyp or secure os. If we fail
+		 * to find it in either of this, something might be terrible
+		 * wrong.
+		 */
+		ret = __host_check_page_state_range(phys, PAGE_SIZE,
+						    PKVM_PAGE_SHARED_BORROWED);
+		if (ret != 0) {
+
+			/* Verify if the page is shared with the hyp */
+			hyp_lock_component();
+			hyp_va = (u64)__hyp_va(phys);
+			ret = __hyp_check_page_state_range(hyp_va, PAGE_SIZE,
+							   PKVM_PAGE_SHARED_BORROWED);
+			if (ret != 0) {
+				/* Verify if the page is shared with secure */
+
+				/* TODO: ask secure os to release shared memory
+				 * from guest.
+				 */
+				ret = 0;
+			} else {
+				mmu = &vm->kvm.arch.mmu;
+				kvm_vmid = &mmu->vmid;
+				vmid = atomic64_read(&kvm_vmid->id);
+
+				hyp_unlock_component();
+				guest_unlock_component(vm);
+
+				hyp_ffa_release_buffers(vm->vcpus[0], vmid,
+							(void *)hyp_va);
+
+				guest_lock_component(vm);
+				hyp_lock_component();
+				kvm_pgtable_hyp_unmap(&pkvm_pgtable, hyp_va, PAGE_SIZE);
+			}
+			hyp_unlock_component();
+		}
 		break;
 	default:
 		BUG_ON(1);
