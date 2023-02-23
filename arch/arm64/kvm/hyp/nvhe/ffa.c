@@ -1312,6 +1312,46 @@ out_handled:
 	return ret;
 }
 
+bool hyp_ffa_release_buffers(struct pkvm_hyp_vcpu *vcpu, int vmid, void *addr)
+{
+	bool found = false;
+
+	if (vmid < 0 || vmid >= KVM_MAX_PVMS || !addr)
+		return false;
+
+	hyp_spin_lock(&hyp_buffers.lock);
+
+	if (non_secure_el1_buffers[vmid].tx == addr) {
+		found = true;
+		non_secure_el1_buffers[vmid].tx = NULL;
+	}
+
+	if (non_secure_el1_buffers[vmid].rx == addr) {
+		found = true;
+		non_secure_el1_buffers[vmid].rx = NULL;
+	}
+
+	if (!found)
+		goto unlock_ffa_buffers;
+
+	if (vmid == 0) {
+		hyp_unpin_shared_mem(addr, addr + 1);
+	} else {
+		hyp_unpin_shared_mem_from_guest(vcpu, addr, addr + 1);
+	}
+
+	if (!non_secure_el1_buffers[vmid].rx &&
+	    !non_secure_el1_buffers[vmid].tx &&
+	    hyp_buffer_refcnt > 0)
+		hyp_buffer_refcnt--;
+
+	ffa_unmap_hyp_buffers();
+
+unlock_ffa_buffers:
+	hyp_spin_unlock(&hyp_buffers.lock);
+	return !!found;
+}
+
 int hyp_ffa_init(void *pages)
 {
 	struct arm_smccc_res res;

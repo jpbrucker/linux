@@ -24,4 +24,6 @@ static inline bool is_ffa_call(u64 func_id)
 	       ARM_SMCCC_FUNC_NUM(func_id) <= FFA_MAX_FUNC_NUM;
 }
 
+bool hyp_ffa_release_buffers(struct pkvm_hyp_vcpu *vcpu, int vmid, void *addr);
+
 #endif /* __KVM_HYP_FFA_H */
