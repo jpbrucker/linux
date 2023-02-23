@@ -2012,8 +2012,8 @@ int of_map_id(struct device_node *np, u32 id,
 		return 0;
 	}
 
-	pr_info("%pOF: no %s translation for id 0x%x on %pOF\n", np, map_name,
-		id, target && *target ? *target : NULL);
+	pr_debug("%pOF: no %s translation for id 0x%x on %pOF\n", np, map_name,
+		 id, target && *target ? *target : NULL);
 
 	/* Bypasses translation */
 	if (id_out)
