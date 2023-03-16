@@ -666,6 +666,50 @@ static int ffa_guest_repaint_ipa_ranges(struct ffa_composite_mem_region *reg,
 	return nr_entries;
 }
 
+static struct ffa_guest_share_ctxt
+*ffa_guest_get_ipa_from_pa(struct kvm_ffa_buffers *guest_ctxt, u64 pa, u64 *ipa)
+{
+	struct ffa_guest_share_ctxt *transfer_ctxt;
+	int i;
+
+	/* TODO: optimise this search */
+	list_for_each_entry(transfer_ctxt, &guest_ctxt->transfers, node) {
+		for (i = 0; i < transfer_ctxt->no_repainted; i++) {
+			if (transfer_ctxt->repainted[i].pa == pa) {
+				*ipa = transfer_ctxt->repainted[i].ipa;
+				return transfer_ctxt;
+			}
+		}
+	}
+
+	return NULL;
+}
+
+static void ffa_guest_repaint_pa_ranges(struct ffa_composite_mem_region *reg,
+					struct kvm_ffa_buffers *guest_ctxt)
+{
+	int i, j;
+	struct ffa_mem_region_addr_range *range;
+	struct ffa_guest_share_ctxt *transfer_ctxt = NULL;
+	u64 ipa;
+
+	for (i = 0; i < reg->addr_range_cnt; i++) {
+		range = &reg->constituents[i];
+		for (j = 0; j < range->pg_cnt; j++) {
+			transfer_ctxt = ffa_guest_get_ipa_from_pa(guest_ctxt,
+								  range->address,
+								  &ipa);
+			WARN_ON(!transfer_ctxt);
+			range->address = ipa;
+		}
+	}
+
+	/* Cleanup the transfer context from this guest */
+	list_del(&transfer_ctxt->node);
+	ffa_guest_free_share_context(transfer_ctxt);
+}
+
+
 /* Annotate the pagetables of the guest as being shared with FF-A */
 static int ffa_guest_share_ranges(struct ffa_mem_region_addr_range *ranges,
 				  u32 nranges, struct kvm_cpu_context *ctxt,
@@ -1023,6 +1067,10 @@ static void do_ffa_mem_reclaim(struct arm_smccc_res *res,
 	hyp_spin_lock(&hyp_buffers.lock);
 
 	buf = hyp_buffers.tx;
+
+	/* TODO: Check if it is ok to pass the HOST_FFA_ID here in case
+	 * we try to reclaim guest memory.
+	 */
 	*buf = (struct ffa_mem_region) {
 		.sender_id	= HOST_FFA_ID,
 		.handle		= handle,
@@ -1072,9 +1120,17 @@ static void do_ffa_mem_reclaim(struct arm_smccc_res *res,
 		goto out_unlock;
 
 	reg = (void *)buf + offset;
-	/* If the SPMD was happy, then we should be too. */
-	WARN_ON(ffa_host_unshare_ranges(reg->constituents,
-					reg->addr_range_cnt));
+
+	if (vmid == 0) {
+		/* If the SPMD was happy, then we should be too. */
+		WARN_ON(ffa_host_unshare_ranges(reg->constituents,
+						reg->addr_range_cnt));
+	} else {
+		ffa_guest_repaint_pa_ranges(reg, &non_secure_el1_buffers[vmid]);
+		WARN_ON(ffa_guest_unshare_ranges(reg->constituents,
+						 reg->addr_range_cnt,
+						 ctxt, vmid));
+	}
 out_unlock:
 	hyp_spin_unlock(&hyp_buffers.lock);
 
@@ -1229,6 +1285,8 @@ int kvm_guest_ffa_handler(struct pkvm_hyp_vcpu *hyp_vcpu, u64 *exit_code)
 				      exit_code);
 		goto out_handled;
 	case FFA_MEM_RECLAIM:
+		do_ffa_mem_reclaim(&res, ctxt, vmid);
+		goto out_handled;
 	case FFA_MEM_LEND:
 	case FFA_FN64_MEM_LEND:
 	case FFA_MEM_FRAG_TX:
