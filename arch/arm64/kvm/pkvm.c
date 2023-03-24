@@ -14,6 +14,7 @@
 #include <linux/of_fdt.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/sort.h>
+#include <linux/debugfs.h>
 
 #include <asm/kvm_host.h>
 #include <asm/kvm_mmu.h>
@@ -738,3 +739,25 @@ static int __init hyp_allocator_debugfs_init(void)
 	return 0;
 }
 late_initcall(hyp_allocator_debugfs_init);
+
+static ssize_t event_write(struct file *f, const char __user *buf,
+			   size_t size, loff_t *pos)
+{
+	kvm_call_hyp_nvhe(__pkvm_selftest_event);
+
+	return size;
+}
+
+static const struct file_operations event_fops = {
+	.read = NULL,
+	.write = event_write,
+	.llseek = default_llseek,
+};
+
+static int __init pkvm_selftest_init(void)
+{
+	debugfs_create_file("pkvm_selftest_event", 0200, NULL, NULL,
+			    &event_fops);
+	return 0;
+}
+device_initcall(pkvm_selftest_init);

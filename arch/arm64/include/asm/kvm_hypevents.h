@@ -48,4 +48,11 @@ HYP_EVENT(__hyp_printk,
 	HE_PRINTK_UNKNOWN_FMT(hyp_printk_fmt_from_id(__entry->fmt_id),
 		__entry->a, __entry->b, __entry->c, __entry->d)
 );
+
+HYP_EVENT(selftest,
+	  HE_PROTO(void),
+	  HE_STRUCT(),
+	  HE_ASSIGN(),
+	  HE_PRINTK(" ")
+);
 #endif /* __ARM64_KVM_HYPEVENTS_H_ */
