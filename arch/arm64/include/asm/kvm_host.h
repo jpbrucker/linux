@@ -466,11 +466,11 @@ struct kvm_vcpu_arch {
 	/* Configuration flags, set once and for all before the vcpu can run */
 	u8 cflags;
 
-	/* Input flags to the hypervisor code, potentially cleared after use */
-	u8 iflags;
-
 	/* State flags for kernel bookkeeping, unused by the hypervisor code */
 	u8 sflags;
+
+	/* Input flags to the hypervisor code, potentially cleared after use */
+	u16 iflags;
 
 	/*
 	 * Don't run the guest (internal implementation need).
