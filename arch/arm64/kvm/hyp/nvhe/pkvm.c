@@ -1341,30 +1341,6 @@ static bool pkvm_handle_psci(struct pkvm_hyp_vcpu *hyp_vcpu)
 	return pvm_psci_not_supported(hyp_vcpu);
 }
 
-static u64 __pkvm_memshare_page_req(struct pkvm_hyp_vcpu *hyp_vcpu, u64 ipa)
-{
-	struct kvm_vcpu *vcpu = &hyp_vcpu->vcpu;
-	u64 elr;
-
-	/* Fake up a data abort (Level 3 translation fault on write) */
-	vcpu->arch.fault.esr_el2 = (u32)ESR_ELx_EC_DABT_LOW << ESR_ELx_EC_SHIFT |
-				   ESR_ELx_WNR | ESR_ELx_FSC_FAULT |
-				   FIELD_PREP(ESR_ELx_FSC_LEVEL, 3);
-
-	/* Shuffle the IPA around into the HPFAR */
-	vcpu->arch.fault.hpfar_el2 = (ipa >> 8) & HPFAR_MASK;
-
-	/* This is a virtual address. 0's good. Let's go with 0. */
-	vcpu->arch.fault.far_el2 = 0;
-
-	/* Rewind the ELR so we return to the HVC once the IPA is mapped */
-	elr = read_sysreg(elr_el2);
-	elr -= 4;
-	write_sysreg(elr, elr_el2);
-
-	return ARM_EXCEPTION_TRAP;
-}
-
 static bool pkvm_memshare_call(struct pkvm_hyp_vcpu *hyp_vcpu, u64 *exit_code)
 {
 	struct kvm_vcpu *vcpu = &hyp_vcpu->vcpu;
@@ -1491,6 +1467,30 @@ static bool pkvm_memrelinquish_call(struct pkvm_hyp_vcpu *hyp_vcpu)
 out_guest_err:
 	smccc_set_retval(vcpu, SMCCC_RET_INVALID_PARAMETER, 0, 0, 0);
 	return true;
+}
+
+u64 __pkvm_memshare_page_req(struct pkvm_hyp_vcpu *hyp_vcpu, u64 ipa)
+{
+	struct kvm_vcpu *vcpu = &hyp_vcpu->vcpu;
+	u64 elr;
+
+	/* Fake up a data abort (Level 3 translation fault on write) */
+	vcpu->arch.fault.esr_el2 = (u32)ESR_ELx_EC_DABT_LOW << ESR_ELx_EC_SHIFT |
+				   ESR_ELx_WNR | ESR_ELx_FSC_FAULT |
+				   FIELD_PREP(ESR_ELx_FSC_LEVEL, 3);
+
+	/* Shuffle the IPA around into the HPFAR */
+	vcpu->arch.fault.hpfar_el2 = (ipa >> 8) & HPFAR_MASK;
+
+	/* This is a virtual address. 0's good. Let's go with 0. */
+	vcpu->arch.fault.far_el2 = 0;
+
+	/* Rewind the ELR so we return to the HVC once the IPA is mapped */
+	elr = read_sysreg(elr_el2);
+	elr -= 4;
+	write_sysreg(elr, elr_el2);
+
+	return ARM_EXCEPTION_TRAP;
 }
 
 bool kvm_guest_filter_smc64(struct kvm_vcpu *vcpu)
