@@ -23,4 +23,6 @@ struct ring_buffer_meta {
 	} reader_page;
 };
 
+#define TRACE_MMAP_IOCTL_GET_READER_PAGE	_IO('T', 0x1)
+
 #endif /* _UAPI_TRACE_MMAP_H_ */
