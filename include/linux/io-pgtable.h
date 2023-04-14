@@ -170,6 +170,8 @@ struct io_pgtable {
  * @map_pages:    Map a physically contiguous range of pages of the same size.
  * @unmap:        Unmap a physically contiguous memory region.
  * @unmap_pages:  Unmap a range of virtually contiguous pages of the same size.
+ * @unmap_leaf:   Unmap a single leaf entry. Return its size and the old
+ *                physical address
  * @iova_to_phys: Translate iova to physical address.
  *
  * These functions map directly onto the iommu_ops member functions with
@@ -186,6 +188,8 @@ struct io_pgtable_ops {
 	size_t (*unmap_pages)(struct io_pgtable *iop, unsigned long iova,
 			      size_t pgsize, size_t pgcount,
 			      struct iommu_iotlb_gather *gather);
+	size_t (*unmap_leaf)(struct io_pgtable *iop, unsigned long iova,
+			     size_t pgsize, phys_addr_t *paddr);
 	phys_addr_t (*iova_to_phys)(struct io_pgtable *iop, unsigned long iova);
 };
 
@@ -225,6 +229,15 @@ iopt_unmap_pages(struct io_pgtable *iop, unsigned long iova, size_t pgsize,
 	if (!iop->ops || !iop->ops->unmap_pages)
 		return 0;
 	return iop->ops->unmap_pages(iop, iova, pgsize, pgcount, gather);
+}
+
+static inline size_t
+iopt_unmap_leaf(struct io_pgtable *iop, unsigned long iova, size_t size,
+		 phys_addr_t *paddr)
+{
+	if (!iop->ops || !iop->ops->unmap_leaf)
+		return 0;
+	return iop->ops->unmap_leaf(iop, iova, size, paddr);
 }
 
 static inline phys_addr_t
