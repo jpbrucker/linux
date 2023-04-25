@@ -32,8 +32,8 @@ struct hyp_fixmap_slot {
 };
 static DEFINE_PER_CPU(struct hyp_fixmap_slot, fixmap_slots);
 
-static int __pkvm_create_mappings(unsigned long start, unsigned long size,
-				  unsigned long phys, enum kvm_pgtable_prot prot)
+int __pkvm_create_mappings(unsigned long start, unsigned long size,
+			   unsigned long phys, enum kvm_pgtable_prot prot)
 {
 	int err;
 
@@ -42,6 +42,17 @@ static int __pkvm_create_mappings(unsigned long start, unsigned long size,
 	hyp_spin_unlock(&pkvm_pgd_lock);
 
 	return err;
+}
+
+int __pkvm_remove_mappings(unsigned long start, unsigned long size)
+{
+	u64 unmapped;
+
+	hyp_spin_lock(&pkvm_pgd_lock);
+	unmapped = kvm_pgtable_hyp_unmap(&pkvm_pgtable, start, size);
+	hyp_spin_unlock(&pkvm_pgd_lock);
+
+	return unmapped == size ? 0 : -EFAULT;
 }
 
 /**
