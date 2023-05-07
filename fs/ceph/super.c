@@ -267,6 +267,7 @@ static int ceph_parse_new_source(const char *dev_name, const char *dev_name_end,
 	struct ceph_fsid fsid;
 	struct ceph_parse_opts_ctx *pctx = fc->fs_private;
 	struct ceph_mount_options *fsopt = pctx->opts;
+	struct ceph_options *copts = pctx->copts;
 	char *fsid_start, *fs_name_start;
 
 	if (*dev_name_end != '=') {
@@ -285,6 +286,12 @@ static int ceph_parse_new_source(const char *dev_name, const char *dev_name_end,
 
 	if (ceph_parse_fsid(fsid_start, &fsid))
 		return invalfc(fc, "Invalid FSID");
+	if (!(copts->flags & CEPH_OPT_FSID)) {
+		copts->fsid = fsid;
+		copts->flags |= CEPH_OPT_FSID;
+	} else if (ceph_fsid_compare(&fsid, &copts->fsid)) {
+		return invalfc(fc, "Mismatching cluster FSID");
+	}
 
 	++fs_name_start; /* start of file system name */
 	len = dev_name_end - fs_name_start;
@@ -297,6 +304,16 @@ static int ceph_parse_new_source(const char *dev_name, const char *dev_name_end,
 		return invalfc(fc, "Mismatching mds_namespace");
 	}
 	dout("file system (mds namespace) '%s'\n", fsopt->mds_namespace);
+
+	len = fsid_start - dev_name - 1;
+	if (!copts->name) {
+		copts->name = kstrndup(dev_name, len, GFP_KERNEL);
+		if (!copts->name)
+			return -ENOMEM;
+	} else if (!strstrn_equals(copts->name, dev_name, len)) {
+		return invalfc(fc, "Mismatching cephx name");
+	}
+	dout("cephx name '%s'\n", copts->name);
 
 	fsopt->new_dev_syntax = true;
 	return 0;
