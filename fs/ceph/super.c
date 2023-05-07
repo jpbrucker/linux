@@ -235,18 +235,10 @@ static void canonicalize_path(char *path)
 	path[j] = '\0';
 }
 
-/*
- * Check if the mds namespace in ceph_mount_options matches
- * the passed in namespace string. First time match (when
- * ->mds_namespace is NULL) is treated specially, since
- * ->mds_namespace needs to be initialized by the caller.
- */
-static int namespace_equals(struct ceph_mount_options *fsopt,
-			    const char *namespace, size_t len)
+/* check if s1 (null terminated) equals to s2 (with length len2) */
+static int strstrn_equals(const char *s1, const char *s2, size_t len2)
 {
-	return !(fsopt->mds_namespace &&
-		 (strlen(fsopt->mds_namespace) != len ||
-		  strncmp(fsopt->mds_namespace, namespace, len)));
+	return !strncmp(s1, s2, len2) && strlen(s1) == len2;
 }
 
 static int ceph_parse_old_source(const char *dev_name, const char *dev_name_end,
@@ -297,12 +289,13 @@ static int ceph_parse_new_source(const char *dev_name, const char *dev_name_end,
 	++fs_name_start; /* start of file system name */
 	len = dev_name_end - fs_name_start;
 
-	if (!namespace_equals(fsopt, fs_name_start, len))
+	if (!fsopt->mds_namespace) {
+		fsopt->mds_namespace = kstrndup(fs_name_start, len, GFP_KERNEL);
+		if (!fsopt->mds_namespace)
+			return -ENOMEM;
+	} else if (!strstrn_equals(fsopt->mds_namespace, fs_name_start, len)) {
 		return invalfc(fc, "Mismatching mds_namespace");
-	kfree(fsopt->mds_namespace);
-	fsopt->mds_namespace = kstrndup(fs_name_start, len, GFP_KERNEL);
-	if (!fsopt->mds_namespace)
-		return -ENOMEM;
+	}
 	dout("file system (mds namespace) '%s'\n", fsopt->mds_namespace);
 
 	fsopt->new_dev_syntax = true;
@@ -417,11 +410,12 @@ static int ceph_parse_mount_param(struct fs_context *fc,
 		param->string = NULL;
 		break;
 	case Opt_mds_namespace:
-		if (!namespace_equals(fsopt, param->string, strlen(param->string)))
+		if (!fsopt->mds_namespace) {
+			fsopt->mds_namespace = param->string;
+			param->string = NULL;
+		} else if (strcmp(fsopt->mds_namespace, param->string)) {
 			return invalfc(fc, "Mismatching mds_namespace");
-		kfree(fsopt->mds_namespace);
-		fsopt->mds_namespace = param->string;
-		param->string = NULL;
+		}
 		break;
 	case Opt_recover_session:
 		mode = result.uint_32;
