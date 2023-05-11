@@ -741,6 +741,32 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 	if (ret)
 		return ret;
 
+	req = (struct virtio_iommu_req_attach) {
+		.head.type	= VIRTIO_IOMMU_T_ATTACH,
+		.domain		= cpu_to_le32(vdomain->id),
+	};
+
+	if (vdomain->bypass)
+		req.flags |= cpu_to_le32(VIRTIO_IOMMU_ATTACH_F_BYPASS);
+
+	for (i = 0; i < fwspec->num_ids; i++) {
+		req.endpoint = cpu_to_le32(fwspec->ids[i]);
+
+		ret = viommu_send_req_sync(vdomain->viommu, &req, sizeof(req));
+		if (ret)
+			goto err_detach;
+	}
+
+	if (!vdomain->nr_endpoints) {
+		/*
+		 * This endpoint is the first to be attached to the domain.
+		 * Replay existing mappings (e.g. SW MSI).
+		 */
+		ret = viommu_replay_mappings(vdomain);
+		if (ret)
+			goto err_detach;
+	}
+
 	/*
 	 * In the virtio-iommu device, when attaching the endpoint to a new
 	 * domain, it is detached from the old one and, if as a result the
@@ -755,37 +781,18 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 	 */
 	if (vdev->vdomain)
 		vdev->vdomain->nr_endpoints--;
-
-	req = (struct virtio_iommu_req_attach) {
-		.head.type	= VIRTIO_IOMMU_T_ATTACH,
-		.domain		= cpu_to_le32(vdomain->id),
-	};
-
-	if (vdomain->bypass)
-		req.flags |= cpu_to_le32(VIRTIO_IOMMU_ATTACH_F_BYPASS);
-
-	for (i = 0; i < fwspec->num_ids; i++) {
-		req.endpoint = cpu_to_le32(fwspec->ids[i]);
-
-		ret = viommu_send_req_sync(vdomain->viommu, &req, sizeof(req));
-		if (ret)
-			return ret;
-	}
-
-	if (!vdomain->nr_endpoints) {
-		/*
-		 * This endpoint is the first to be attached to the domain.
-		 * Replay existing mappings (e.g. SW MSI).
-		 */
-		ret = viommu_replay_mappings(vdomain);
-		if (ret)
-			return ret;
-	}
-
 	vdomain->nr_endpoints++;
 	vdev->vdomain = vdomain;
 
 	return 0;
+
+err_detach:
+	req.head.type = VIRTIO_IOMMU_T_DETACH;
+	for (--i; i >= 0; --i) {
+		req.endpoint = cpu_to_le32(fwspec->ids[i]);
+		viommu_send_req_sync(vdomain->viommu, &req, sizeof(req));
+	}
+	return ret;
 }
 
 static void viommu_detach_dev(struct viommu_endpoint *vdev)
