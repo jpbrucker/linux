@@ -22,6 +22,7 @@ static struct hyp_allocator {
 	u32			size;
 	hyp_spinlock_t		lock;
 	u8			errno[NR_CPUS];
+	u8			missing_donations[NR_CPUS];
 } hyp_allocator;
 
 struct chunk_hdr {
@@ -174,8 +175,14 @@ static int hyp_allocator_map(struct hyp_allocator *allocator,
 	if ((va + size) > (allocator->start + allocator->size))
 		return -E2BIG;
 
-	if (mc->nr_pages < (size >> PAGE_SHIFT))
+	if (mc->nr_pages < (size >> PAGE_SHIFT)) {
+		u8 *missing_donations = &allocator->missing_donations[hyp_smp_processor_id()];
+		u32 delta = (size >> PAGE_SHIFT) - mc->nr_pages;
+
+		*missing_donations = (u8)min(delta, (u32)~((u8)0));
+
 		return -ENOMEM;
+	}
 
 	while (nr_pages < (size >> PAGE_SHIFT)) {
 		void *page;
@@ -767,6 +774,11 @@ static int hyp_allocator_init(struct hyp_allocator *allocator, size_t size)
 	return 0;
 }
 
+static u8 hyp_allocator_missing_donations(struct hyp_allocator *allocator)
+{
+	return allocator->missing_donations[hyp_smp_processor_id()];
+}
+
 void hyp_free(void *addr)
 {
 	hyp_allocator_free(&hyp_allocator, addr);
@@ -805,4 +817,9 @@ void hyp_alloc_reclaim(struct kvm_hyp_memcache *mc, int target)
 int hyp_alloc_init(size_t size)
 {
 	return hyp_allocator_init(&hyp_allocator, size);
+}
+
+u8 hyp_alloc_missing_donations(void)
+{
+	return hyp_allocator_missing_donations(&hyp_allocator);
 }
