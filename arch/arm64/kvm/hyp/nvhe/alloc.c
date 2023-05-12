@@ -774,6 +774,17 @@ static int hyp_allocator_init(struct hyp_allocator *allocator, size_t size)
 	return 0;
 }
 
+static size_t hyp_allocator_alloc_size(struct hyp_allocator *allocator,
+				       void *addr)
+{
+	char *chunk_data = (char *)addr;
+	struct chunk_hdr *chunk;
+
+	chunk = chunk_get(container_of(chunk_data, struct chunk_hdr, data));
+
+	return chunk->alloc_size;
+}
+
 static u8 hyp_allocator_missing_donations(struct hyp_allocator *allocator)
 {
 	return allocator->missing_donations[hyp_smp_processor_id()];
@@ -817,6 +828,11 @@ void hyp_alloc_reclaim(struct kvm_hyp_memcache *mc, int target)
 int hyp_alloc_init(size_t size)
 {
 	return hyp_allocator_init(&hyp_allocator, size);
+}
+
+size_t hyp_alloc_size(void *addr)
+{
+	return hyp_allocator_alloc_size(&hyp_allocator, addr);
 }
 
 u8 hyp_alloc_missing_donations(void)
