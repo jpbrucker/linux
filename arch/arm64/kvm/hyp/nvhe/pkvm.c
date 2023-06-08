@@ -1512,8 +1512,12 @@ bool kvm_handle_pvm_smc64(struct kvm_vcpu *vcpu, u64 *exit_code)
 	hyp_vcpu = container_of(vcpu, struct pkvm_hyp_vcpu, vcpu);
 	if (is_ffa_call(fn))
 		ret = kvm_guest_ffa_handler(hyp_vcpu, exit_code);
-	if (ret != 0)
+
+	if (ret == -EFAULT) {
+		handled = false;
+	} else if (ret != 0) {
 		handled = kvm_guest_filter_smc64(vcpu);
+	}
 
 	__kvm_skip_instr(vcpu);
 	return handled;

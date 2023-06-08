@@ -524,16 +524,86 @@ static int ffa_guest_repaint_ipa_ranges(struct ffa_composite_mem_region *reg,
 /* Annotate the pagetables of the guest as being shared with FF-A */
 static int ffa_guest_share_ranges(struct ffa_mem_region_addr_range *ranges,
 				  u32 nranges, struct kvm_cpu_context *ctxt,
-				  u64 vmid)
+				  u64 vmid, u64 *exit_code)
 {
-	return -ENOSYS;
+	struct kvm_vcpu *vcpu = ctxt->__hyp_running_vcpu;
+	struct ffa_mem_region_addr_range *range;
+	struct pkvm_hyp_vcpu *pkvm_vcpu;
+	int i, j, ret;
+	u64 ipa_addr;
+
+	if (!vcpu)
+		vcpu = container_of(ctxt, struct kvm_vcpu, arch.ctxt);
+
+	pkvm_vcpu = container_of(vcpu, struct pkvm_hyp_vcpu, vcpu);
+	for (i = 0; i < nranges; ++i) {
+		range = &ranges[i];
+		for (j = 0; j < range->pg_cnt; j++) {
+			ipa_addr = range->address + j * FFA_PAGE_SIZE;
+
+			if (!PAGE_ALIGNED(ipa_addr)) {
+				ret = -EINVAL;
+				goto unshare_inner_pages;
+			}
+
+			ret = __pkvm_guest_share_ffa(pkvm_vcpu, ipa_addr);
+			if (!ret) {
+				continue;
+			} else if (ret == -EFAULT) {
+				*exit_code = __pkvm_memshare_page_req(pkvm_vcpu,
+								      ipa_addr);
+				return ret;
+			} else {
+				goto unshare_inner_pages;
+			}
+		}
+	}
+
+	return 0;
+
+unshare_inner_pages:
+	for (j = j - 1; j >= 0; j--) {
+		ipa_addr = range->address + j * FFA_PAGE_SIZE;
+		WARN_ON(__pkvm_guest_unshare_ffa(pkvm_vcpu, ipa_addr));
+	}
+
+	for (i = i - 1; i >= 0; i--) {
+		range = &ranges[i];
+		for (j = 0; j < range->pg_cnt; j++) {
+			ipa_addr = range->address + j * FFA_PAGE_SIZE;
+			WARN_ON(__pkvm_guest_unshare_ffa(pkvm_vcpu, ipa_addr));
+		}
+	}
+
+	return ret;
 }
 
 static int ffa_guest_unshare_ranges(struct ffa_mem_region_addr_range *ranges,
 				    u32 nranges, struct kvm_cpu_context *ctxt,
 				    u64 vmid)
 {
-	return -ENOSYS;
+	struct kvm_vcpu *vcpu = ctxt->__hyp_running_vcpu;
+	struct ffa_mem_region_addr_range *range;
+	struct pkvm_hyp_vcpu *pkvm_vcpu;
+	int i, j, ret = 0;
+	u64 ipa_addr;
+
+	if (!vcpu)
+		vcpu = container_of(ctxt, struct kvm_vcpu, arch.ctxt);
+
+	pkvm_vcpu = container_of(vcpu, struct pkvm_hyp_vcpu, vcpu);
+	for (i = 0; i < nranges; i++) {
+		range = &ranges[i];
+		for (j = 0; j < range->pg_cnt; j++) {
+			ipa_addr = range->address + j * FFA_PAGE_SIZE;
+			ret = __pkvm_guest_unshare_ffa(pkvm_vcpu, ipa_addr);
+			if (ret != 0) {
+				return ret;
+			}
+		}
+	}
+
+	return ret;
 }
 
 /* Verifies if the VM is allowed to do FF-A memory operations */
@@ -607,7 +677,7 @@ out:
 static __always_inline int do_ffa_mem_xfer(const u64 func_id,
 					   struct arm_smccc_res *res,
 					   struct kvm_cpu_context *ctxt,
-					   u64 vmid)
+					   u64 vmid, u64 *exit_code)
 {
 	DECLARE_REG(u32, len, ctxt, 1);
 	DECLARE_REG(u32, fraglen, ctxt, 2);
@@ -683,7 +753,7 @@ static __always_inline int do_ffa_mem_xfer(const u64 func_id,
 			goto out_unlock;
 	} else {
 		ret = ffa_guest_share_ranges(reg->constituents, nr_ranges,
-					     ctxt, vmid);
+					     ctxt, vmid, exit_code);
 		if (ret)
 			goto out_unlock;
 
@@ -942,14 +1012,14 @@ bool kvm_host_ffa_handler(struct kvm_cpu_context *host_ctxt)
 		goto out_handled;
 	case FFA_MEM_SHARE:
 	case FFA_FN64_MEM_SHARE:
-		do_ffa_mem_xfer(FFA_FN64_MEM_SHARE, &res, host_ctxt, 0);
+		do_ffa_mem_xfer(FFA_FN64_MEM_SHARE, &res, host_ctxt, 0, NULL);
 		goto out_handled;
 	case FFA_MEM_RECLAIM:
 		do_ffa_mem_reclaim(&res, host_ctxt, 0);
 		goto out_handled;
 	case FFA_MEM_LEND:
 	case FFA_FN64_MEM_LEND:
-		do_ffa_mem_xfer(FFA_FN64_MEM_LEND, &res, host_ctxt, 0);
+		do_ffa_mem_xfer(FFA_FN64_MEM_LEND, &res, host_ctxt, 0, NULL);
 		goto out_handled;
 	case FFA_MEM_FRAG_TX:
 		do_ffa_mem_frag_tx(&res, host_ctxt, 0);
@@ -990,7 +1060,8 @@ int kvm_guest_ffa_handler(struct pkvm_hyp_vcpu *hyp_vcpu, u64 *exit_code)
 		goto out_handled;
 	case FFA_MEM_SHARE:
 	case FFA_FN64_MEM_SHARE:
-		ret = do_ffa_mem_xfer(FFA_FN64_MEM_SHARE, &res, ctxt, vmid);
+		ret = do_ffa_mem_xfer(FFA_FN64_MEM_SHARE, &res, ctxt, vmid,
+				      exit_code);
 		goto out_handled;
 	case FFA_MEM_RECLAIM:
 	case FFA_MEM_LEND:
@@ -1007,6 +1078,13 @@ int kvm_guest_ffa_handler(struct pkvm_hyp_vcpu *hyp_vcpu, u64 *exit_code)
 
 	ffa_to_smccc_error(&res, FFA_RET_NOT_SUPPORTED);
 out_handled:
+	/* If there is a fault during the guest sharing path because there
+	 * is no guest stage-2 mapping, we will replay the last instruction
+	 * so don't overwrite the registers with the FF-A retval.
+	 */
+	if (ret == -EFAULT)
+		return ret;
+
 	ffa_set_retval(ctxt, &res);
 	return ret;
 }
