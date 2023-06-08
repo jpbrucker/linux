@@ -518,7 +518,59 @@ static int ffa_host_unshare_ranges(struct ffa_mem_region_addr_range *ranges,
 static int ffa_guest_repaint_ipa_ranges(struct ffa_composite_mem_region *reg,
 					struct kvm_cpu_context *ctxt, u64 vmid)
 {
-	return -ENOSYS;
+	struct ffa_mem_region_addr_range *ipa_ranges = reg->constituents;
+	struct kvm_vcpu *vcpu = ctxt->__hyp_running_vcpu;
+	struct ffa_mem_region_addr_range *phys_ranges;
+	struct pkvm_hyp_vcpu *pkvm_vcpu;
+	int i, pg_idx, ret, nr_entries = 0;
+	u64 ipa_addr;
+	size_t total_sz;
+	struct pkvm_hyp_vm *vm;
+	kvm_pte_t pte;
+
+	if (!vcpu)
+		vcpu = container_of(ctxt, struct kvm_vcpu, arch.ctxt);
+
+	pkvm_vcpu = container_of(vcpu, struct pkvm_hyp_vcpu, vcpu);
+	vm = pkvm_hyp_vcpu_to_hyp_vm(pkvm_vcpu);
+	total_sz = reg->total_pg_cnt * sizeof(struct ffa_mem_region_addr_range);
+
+	if (total_sz > ffa_desc_buf.len)
+		return FFA_RET_NO_MEMORY;
+
+	phys_ranges = (struct ffa_mem_region_addr_range *)ffa_desc_buf.buf;
+	for (i = 0; i < reg->addr_range_cnt; ++i) {
+		struct ffa_mem_region_addr_range *range =
+			&phys_ranges[nr_entries++];
+
+		ret = kvm_pgtable_get_leaf(&vm->pgt, ipa_ranges[i].address,
+					   &pte, NULL);
+		if (ret) {
+			return FFA_RET_INVALID_PARAMETERS;
+		}
+
+		range->address = kvm_pte_to_phys(pte);
+		range->pg_cnt = 1;
+
+		/* If we have multipple pages in the contiguous IPA space,
+		 * break the address region into multipple constituents.
+		 */
+		for (pg_idx = 1; pg_idx < ipa_ranges[i].pg_cnt; pg_idx++) {
+			range = &phys_ranges[nr_entries++];
+			ipa_addr = ipa_ranges[i].address + PAGE_SIZE * pg_idx;
+
+			ret = kvm_pgtable_get_leaf(&vm->pgt, ipa_addr, &pte,
+						   NULL);
+			if (ret) {
+				return FFA_RET_INVALID_PARAMETERS;
+			}
+
+			range->address = kvm_pte_to_phys(pte);
+			range->pg_cnt = 1;
+		}
+	}
+
+	return nr_entries;
 }
 
 /* Annotate the pagetables of the guest as being shared with FF-A */
