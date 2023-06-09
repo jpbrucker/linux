@@ -28,6 +28,7 @@
 
 #include <linux/arm-smccc.h>
 #include <linux/arm_ffa.h>
+#include <linux/list.h>
 #include <asm/kvm_pkvm.h>
 
 #include <kvm/arm_hypercalls.h>
@@ -54,12 +55,25 @@ struct kvm_ffa_descriptor_buffer {
 	size_t	len;
 };
 
+struct ffa_guest_repainted_addr {
+	u64 ipa;
+	u64 pa;
+};
+
+struct ffa_guest_share_ctxt {
+	struct list_head node;
+	u64 ffa_handle;
+	size_t no_repainted;
+	struct ffa_guest_repainted_addr repainted[0];
+};
+
 static struct kvm_ffa_descriptor_buffer ffa_desc_buf;
 
 struct kvm_ffa_buffers {
 	hyp_spinlock_t lock;
 	void *tx;
 	void *rx;
+	struct list_head transfers;
 };
 
 /*
@@ -512,11 +526,28 @@ static int ffa_host_unshare_ranges(struct ffa_mem_region_addr_range *ranges,
 	return ret;
 }
 
+/* Allocates memory that will hold the IPA <-> PA repainting and the FF-A
+ * global handle which identifies the memory transfer.
+ */
+static struct ffa_guest_share_ctxt
+*ffa_guest_allocate_share_context(u32 num_entries, struct kvm_cpu_context *ctxt,
+				  u64 vmid, u64 *exit_code)
+{
+	return NULL;
+}
+
+static void ffa_guest_free_share_context(struct ffa_guest_share_ctxt *transfer)
+{
+	if (transfer == NULL)
+		return;
+}
+
 /* Repaint the guest IPA addresses with PA addresses and break the contiguous
  * constituents. Return the number of painted constituents or a negative error code.
  */
 static int ffa_guest_repaint_ipa_ranges(struct ffa_composite_mem_region *reg,
-					struct kvm_cpu_context *ctxt, u64 vmid)
+					struct kvm_cpu_context *ctxt, u64 vmid,
+					struct ffa_guest_share_ctxt *share_ctxt)
 {
 	struct ffa_mem_region_addr_range *ipa_ranges = reg->constituents;
 	struct kvm_vcpu *vcpu = ctxt->__hyp_running_vcpu;
@@ -737,6 +768,7 @@ static __always_inline int do_ffa_mem_xfer(const u64 func_id,
 	DECLARE_REG(u32, npages_mbz, ctxt, 4);
 	struct ffa_composite_mem_region *reg;
 	struct ffa_mem_region *buf;
+	struct ffa_guest_share_ctxt *transfer = NULL;
 	u32 offset, nr_ranges, total_pg_cnt;
 	int i, ret = 0, no_painted;
 	size_t adjust_sz = 0, remaining_sz;
@@ -804,12 +836,20 @@ static __always_inline int do_ffa_mem_xfer(const u64 func_id,
 		if (ret)
 			goto out_unlock;
 	} else {
+		transfer = ffa_guest_allocate_share_context(total_pg_cnt,
+							    ctxt,
+							    vmid,
+							    exit_code);
+		if (transfer == NULL)
+			goto out_unlock;
+
 		ret = ffa_guest_share_ranges(reg->constituents, nr_ranges,
 					     ctxt, vmid, exit_code);
 		if (ret)
-			goto out_unlock;
+			goto out_release_transfer;
 
-		no_painted = ffa_guest_repaint_ipa_ranges(reg, ctxt, vmid);
+		no_painted = ffa_guest_repaint_ipa_ranges(reg, ctxt, vmid,
+							  transfer);
 		if (no_painted < 0 ||
 		    no_painted < reg->addr_range_cnt) {
 			ret = no_painted;
@@ -854,7 +894,14 @@ static __always_inline int do_ffa_mem_xfer(const u64 func_id,
 		goto err_unshare;
 	}
 
-	/* TODO: store the associated handle */
+	if (transfer) {
+		transfer->ffa_handle = PACK_HANDLE(res->a2, res->a3);
+		list_add(&transfer->node,
+			 &non_secure_el1_buffers[vmid].transfers);
+	}
+
+out_release_transfer:
+	ffa_guest_free_share_context(transfer);
 out_unlock:
 	hyp_spin_unlock(&hyp_buffers.lock);
 out:
@@ -889,7 +936,7 @@ err_unshare:
 						 ctxt, vmid));
 	}
 
-	goto out_unlock;
+	goto out_release_transfer;
 }
 
 static void do_ffa_mem_reclaim(struct arm_smccc_res *res,
@@ -1220,7 +1267,11 @@ int hyp_ffa_init(void *pages)
 	for (i = 0; i < KVM_MAX_PVMS; i++) {
 		non_secure_el1_buffers[i] = (struct kvm_ffa_buffers) {
 			.lock	= __HYP_SPIN_LOCK_UNLOCKED,
+			.tx	= NULL,
+			.rx	= NULL,
 		};
+
+		INIT_LIST_HEAD(&non_secure_el1_buffers[i].transfers);
 	}
 
 	return 0;
