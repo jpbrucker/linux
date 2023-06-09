@@ -1507,7 +1507,7 @@ bool kvm_handle_pvm_smc64(struct kvm_vcpu *vcpu, u64 *exit_code)
 	u32 fn = smccc_get_function(vcpu);
 	struct pkvm_hyp_vcpu *hyp_vcpu;
 	bool handled = true;
-	int ret = -1;
+	int ret = 1;
 
 	hyp_vcpu = container_of(vcpu, struct pkvm_hyp_vcpu, vcpu);
 	if (is_ffa_call(fn))
@@ -1515,7 +1515,12 @@ bool kvm_handle_pvm_smc64(struct kvm_vcpu *vcpu, u64 *exit_code)
 
 	if (ret == -EFAULT) {
 		handled = false;
-	} else if (ret != 0) {
+	} else if (ret == -ENOMEM) {
+		/* No memory from the hyp_allocator, return to the host to
+		 * process the request.
+		 */
+		return false;
+	} else if (ret > 0) {
 		handled = kvm_guest_filter_smc64(vcpu);
 	}
 

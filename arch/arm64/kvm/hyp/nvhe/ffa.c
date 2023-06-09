@@ -33,6 +33,7 @@
 
 #include <kvm/arm_hypercalls.h>
 
+#include <nvhe/alloc.h>
 #include <nvhe/ffa.h>
 #include <nvhe/mem_protect.h>
 #include <nvhe/memory.h>
@@ -533,13 +534,42 @@ static struct ffa_guest_share_ctxt
 *ffa_guest_allocate_share_context(u32 num_entries, struct kvm_cpu_context *ctxt,
 				  u64 vmid, u64 *exit_code)
 {
-	return NULL;
+	struct ffa_guest_share_ctxt *transfer;
+	struct kvm_vcpu *vcpu = ctxt->__hyp_running_vcpu;
+	struct pkvm_hyp_vcpu *pkvm_vcpu;
+	size_t alloc_sz;
+	struct kvm_hyp_req *mem_topup_req;
+
+	if (!vcpu)
+		vcpu = container_of(ctxt, struct kvm_vcpu, arch.ctxt);
+	pkvm_vcpu = container_of(vcpu, struct pkvm_hyp_vcpu, vcpu);
+
+	alloc_sz = sizeof(struct ffa_guest_share_ctxt) + num_entries *
+		sizeof(struct ffa_guest_repainted_addr);
+
+	transfer = hyp_alloc(alloc_sz);
+	if (!transfer) {
+		mem_topup_req = pkvm_hyp_req_reserve(pkvm_vcpu,
+						     KVM_HYP_REQ_MEM);
+		if (!mem_topup_req)
+			return NULL;
+
+		mem_topup_req->mem.nr_pages = hyp_alloc_missing_donations();
+		mem_topup_req->mem.dest = 1;
+		*exit_code = ARM_EXCEPTION_HYP_REQ;
+		return NULL;
+	}
+
+	transfer->no_repainted = num_entries;
+	return transfer;
 }
 
 static void ffa_guest_free_share_context(struct ffa_guest_share_ctxt *transfer)
 {
 	if (transfer == NULL)
 		return;
+
+	hyp_free(transfer);
 }
 
 /* Repaint the guest IPA addresses with PA addresses and break the contiguous
@@ -840,8 +870,10 @@ static __always_inline int do_ffa_mem_xfer(const u64 func_id,
 							    ctxt,
 							    vmid,
 							    exit_code);
-		if (transfer == NULL)
+		if (transfer == NULL) {
+			ret = -ENOMEM;
 			goto out_unlock;
+		}
 
 		ret = ffa_guest_share_ranges(reg->constituents, nr_ranges,
 					     ctxt, vmid, exit_code);
@@ -899,6 +931,8 @@ static __always_inline int do_ffa_mem_xfer(const u64 func_id,
 		list_add(&transfer->node,
 			 &non_secure_el1_buffers[vmid].transfers);
 	}
+
+	goto out_unlock;
 
 out_release_transfer:
 	ffa_guest_free_share_context(transfer);
@@ -1181,7 +1215,7 @@ out_handled:
 	 * is no guest stage-2 mapping, we will replay the last instruction
 	 * so don't overwrite the registers with the FF-A retval.
 	 */
-	if (ret == -EFAULT)
+	if (ret == -EFAULT || ret == -ENOMEM)
 		return ret;
 
 	ffa_set_retval(ctxt, &res);
