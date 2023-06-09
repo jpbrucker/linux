@@ -572,6 +572,18 @@ static void ffa_guest_free_share_context(struct ffa_guest_share_ctxt *transfer)
 	hyp_free(transfer);
 }
 
+static int ffa_guest_insert_repainted(struct ffa_guest_share_ctxt *share_ctxt,
+				      struct ffa_guest_repainted_addr *node,
+				      size_t pos)
+{
+	if (pos >= share_ctxt->no_repainted)
+		return -EINVAL;
+
+	share_ctxt->repainted[pos].ipa = node->ipa;
+	share_ctxt->repainted[pos].pa  = node->pa;
+	return 0;
+}
+
 /* Repaint the guest IPA addresses with PA addresses and break the contiguous
  * constituents. Return the number of painted constituents or a negative error code.
  */
@@ -583,6 +595,7 @@ static int ffa_guest_repaint_ipa_ranges(struct ffa_composite_mem_region *reg,
 	struct kvm_vcpu *vcpu = ctxt->__hyp_running_vcpu;
 	struct ffa_mem_region_addr_range *phys_ranges;
 	struct pkvm_hyp_vcpu *pkvm_vcpu;
+	struct ffa_guest_repainted_addr node;
 	int i, pg_idx, ret, nr_entries = 0;
 	u64 ipa_addr;
 	size_t total_sz;
@@ -602,7 +615,7 @@ static int ffa_guest_repaint_ipa_ranges(struct ffa_composite_mem_region *reg,
 	phys_ranges = (struct ffa_mem_region_addr_range *)ffa_desc_buf.buf;
 	for (i = 0; i < reg->addr_range_cnt; ++i) {
 		struct ffa_mem_region_addr_range *range =
-			&phys_ranges[nr_entries++];
+			&phys_ranges[nr_entries];
 
 		ret = kvm_pgtable_get_leaf(&vm->pgt, ipa_ranges[i].address,
 					   &pte, NULL);
@@ -613,11 +626,20 @@ static int ffa_guest_repaint_ipa_ranges(struct ffa_composite_mem_region *reg,
 		range->address = kvm_pte_to_phys(pte);
 		range->pg_cnt = 1;
 
+		node.ipa = ipa_ranges[i].address;
+		node.pa = range->address;
+		ret = ffa_guest_insert_repainted(share_ctxt, &node, nr_entries);
+		if (ret) {
+			return ret;
+		}
+
+		nr_entries++;
+
 		/* If we have multipple pages in the contiguous IPA space,
 		 * break the address region into multipple constituents.
 		 */
 		for (pg_idx = 1; pg_idx < ipa_ranges[i].pg_cnt; pg_idx++) {
-			range = &phys_ranges[nr_entries++];
+			range = &phys_ranges[nr_entries];
 			ipa_addr = ipa_ranges[i].address + PAGE_SIZE * pg_idx;
 
 			ret = kvm_pgtable_get_leaf(&vm->pgt, ipa_addr, &pte,
@@ -628,6 +650,16 @@ static int ffa_guest_repaint_ipa_ranges(struct ffa_composite_mem_region *reg,
 
 			range->address = kvm_pte_to_phys(pte);
 			range->pg_cnt = 1;
+
+			node.ipa = ipa_addr;
+			node.pa = range->address;
+			ret = ffa_guest_insert_repainted(share_ctxt, &node,
+							 nr_entries);
+			if (ret) {
+				return ret;
+			}
+
+			nr_entries++;
 		}
 	}
 
