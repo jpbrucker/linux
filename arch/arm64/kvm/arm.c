@@ -26,6 +26,7 @@
 
 #define CREATE_TRACE_POINTS
 #include "trace_arm.h"
+#include "hyp_trace.h"
 
 #include <linux/uaccess.h>
 #include <asm/ptrace.h>
@@ -2599,6 +2600,10 @@ static __init int kvm_arm_init(void)
 		err = init_hyp_mode();
 		if (err)
 			goto out_err;
+
+		err = hyp_trace_init_tracefs();
+		if (err)
+			kvm_err("Failed to initialize Hyp tracing\n");
 	}
 
 	err = kvm_init_vector_slots();
