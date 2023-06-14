@@ -84,6 +84,7 @@ struct kvm_ffa_buffers {
 static struct kvm_ffa_buffers hyp_buffers;
 static struct kvm_ffa_buffers non_secure_el1_buffers[KVM_MAX_PVMS];
 static u8 hyp_buffer_refcnt;
+static bool ffa_available;
 
 static void ffa_to_smccc_error(struct arm_smccc_res *res, u64 ffa_errno)
 {
@@ -1352,6 +1353,100 @@ unlock_ffa_buffers:
 	return !!found;
 }
 
+int guest_ffa_reclaim_memory(struct pkvm_hyp_vm *vm)
+{
+	struct pkvm_hyp_vcpu *hyp_vcpu = vm->vcpus[0];
+	struct ffa_mem_region *req;
+	struct kvm_ffa_buffers *guest_ctxt;
+	struct ffa_guest_share_ctxt *transfer_ctxt, *tmp_ctxt;
+	struct ffa_composite_mem_region *reg;
+	struct arm_smccc_res res = {0};
+	u32 offset, len, fraglen, fragoff;
+	u32 handle_lo, handle_hi;
+	struct kvm_vcpu *vcpu = &hyp_vcpu->vcpu;
+	struct kvm_cpu_context *ctxt = &vcpu->arch.ctxt;
+	int ret = 0;
+	struct kvm_s2_mmu *mmu;
+	struct kvm_vmid *kvm_vmid;
+	u64 vmid;
+
+	mmu = &vm->kvm.arch.mmu;
+	kvm_vmid = &mmu->vmid;
+	vmid = atomic64_read(&kvm_vmid->id);
+
+	if (vmid >= KVM_MAX_PVMS)
+		return -EINVAL;
+
+	hyp_spin_lock(&hyp_buffers.lock);
+	guest_ctxt = &non_secure_el1_buffers[vmid];
+	req = hyp_buffers.tx;
+
+	if (!ffa_available || list_empty(&guest_ctxt->transfers)) {
+		ret= 0;
+		goto unlock;
+	}
+
+	list_for_each_entry_safe(transfer_ctxt, tmp_ctxt,
+				 &guest_ctxt->transfers, node) {
+		*req =  (struct ffa_mem_region) {
+			.sender_id      = HOST_FFA_ID,
+			.handle         = transfer_ctxt->ffa_handle,
+		};
+
+		handle_lo = HANDLE_LOW(transfer_ctxt->ffa_handle);
+		handle_hi = HANDLE_HIGH(transfer_ctxt->ffa_handle);
+
+		ffa_retrieve_req(&res, sizeof(*req));
+		if (res.a0 != FFA_MEM_RETRIEVE_RESP) {
+			ret = res.a0;
+			goto unlock;
+		}
+
+		req = hyp_buffers.rx;
+		len = res.a1;
+		fraglen = res.a2;
+		offset  = req->ep_mem_access[0].composite_off;
+
+		WARN_ON(offset > len ||
+			fraglen > KVM_FFA_MBOX_NR_PAGES * PAGE_SIZE);
+
+		if (len > ffa_desc_buf.len) {
+			ret = -ENOMEM;
+			goto unlock;
+		}
+
+		req = ffa_desc_buf.buf;
+		memcpy(req, hyp_buffers.rx, fraglen);
+
+		for (fragoff = fraglen; fragoff < len; fragoff += fraglen) {
+			ffa_mem_frag_rx(&res, handle_lo, handle_hi, fragoff);
+			if (res.a0 != FFA_MEM_FRAG_TX) {
+				ret = res.a0;
+				goto unlock;
+			}
+
+			fraglen = res.a3;
+			memcpy((void *)req + fragoff, hyp_buffers.rx, fraglen);
+		}
+
+		ffa_mem_reclaim(&res, handle_lo, handle_hi, 0);
+		if (res.a0 != FFA_SUCCESS) {
+			ret = res.a0;
+			goto unlock;
+		}
+
+		reg = (void *)req + offset;
+		ffa_guest_repaint_pa_ranges(reg, guest_ctxt);
+		WARN_ON(ffa_guest_unshare_ranges(reg->constituents,
+						 reg->addr_range_cnt,
+						 ctxt, vmid));
+	}
+
+unlock:
+	hyp_spin_unlock(&hyp_buffers.lock);
+	return ret;
+}
+
 int hyp_ffa_init(void *pages)
 {
 	struct arm_smccc_res res;
@@ -1437,6 +1532,8 @@ int hyp_ffa_init(void *pages)
 
 		INIT_LIST_HEAD(&non_secure_el1_buffers[i].transfers);
 	}
+
+	ffa_available = true;
 
 	return 0;
 }

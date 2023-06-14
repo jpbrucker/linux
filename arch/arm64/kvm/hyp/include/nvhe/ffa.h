@@ -25,5 +25,6 @@ static inline bool is_ffa_call(u64 func_id)
 }
 
 bool hyp_ffa_release_buffers(struct pkvm_hyp_vcpu *vcpu, int vmid, void *addr);
+int guest_ffa_reclaim_memory(struct pkvm_hyp_vm *vm);
 
 #endif /* __KVM_HYP_FFA_H */

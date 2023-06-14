@@ -368,6 +368,10 @@ int __pkvm_reclaim_dying_guest_page(pkvm_handle_t handle, u64 pfn, u64 ipa)
 	if (!hyp_vm || !READ_ONCE(hyp_vm->is_dying))
 		goto unlock;
 
+	ret = guest_ffa_reclaim_memory(hyp_vm);
+	if (ret)
+		goto unlock;
+
 	ret = __pkvm_host_reclaim_page(hyp_vm, pfn, ipa);
 	if (ret)
 		goto unlock;
