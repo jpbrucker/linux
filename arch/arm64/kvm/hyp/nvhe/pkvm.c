@@ -1517,7 +1517,7 @@ bool kvm_handle_pvm_smc64(struct kvm_vcpu *vcpu, u64 *exit_code)
 		 * process the request.
 		 */
 		return false;
-	} else if (ret > 0) {
+	} else if (ret > 0 && !is_ffa_error(vcpu)) {
 		handled = kvm_guest_filter_smc64(vcpu);
 	}
 
