@@ -1242,6 +1242,9 @@ bool kvm_host_ffa_handler(struct kvm_cpu_context *host_ctxt)
 		if (!do_ffa_features(&res, host_ctxt))
 			return false;
 		goto out_handled;
+	case FFA_ID_GET:
+		ffa_to_smccc_res_prop(&res, FFA_RET_SUCCESS, HOST_FFA_ID);
+		goto out_handled;
 	/* Memory management */
 	case FFA_FN64_RXTX_MAP:
 		do_ffa_rxtx_map(&res, host_ctxt, 0);
@@ -1289,6 +1292,10 @@ int kvm_guest_ffa_handler(struct pkvm_hyp_vcpu *hyp_vcpu, u64 *exit_code)
 	case FFA_FEATURES:
 		if (!do_ffa_features(&res, ctxt))
 			return -EPERM;
+		goto out_handled;
+	case FFA_ID_GET:
+		/* Return vmid as the partition id */
+		ffa_to_smccc_res_prop(&res, FFA_RET_SUCCESS, vmid);
 		goto out_handled;
 	/* Memory management */
 	case FFA_FN64_RXTX_MAP:
