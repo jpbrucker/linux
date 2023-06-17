@@ -816,10 +816,14 @@ static int ffa_guest_unshare_ranges(struct ffa_mem_region_addr_range *ranges,
 /* Verifies if the VM is allowed to do FF-A memory operations */
 static bool is_ffa_id_valid(u16 sender_ffa_id, u64 vmid)
 {
+#if 1
+	return true;
+#else
 	if (sender_ffa_id == HOST_FFA_ID)
 		return true;
 
 	return false;
+#endif
 }
 
 static void do_ffa_mem_frag_tx(struct arm_smccc_res *res,
