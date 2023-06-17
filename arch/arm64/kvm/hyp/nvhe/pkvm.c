@@ -1493,9 +1493,23 @@ u64 __pkvm_memshare_page_req(struct pkvm_hyp_vcpu *hyp_vcpu, u64 ipa)
 bool kvm_guest_filter_smc64(struct kvm_vcpu *vcpu)
 {
 	struct kvm_cpu_context *ctxt = &vcpu->arch.ctxt;
+	struct kvm_s2_mmu *mmu = vcpu->arch.hw_mmu;
+	struct kvm_vmid *kvm_vmid = &mmu->vmid;
+	u64 vmid = atomic64_read(&kvm_vmid->id);
+	u64 old_client_id, new_client_id;
+
+	// Set w7[15:0] in the SMC to the vmid since TF-A forwards that to TZ
+	old_client_id = vcpu_get_reg(vcpu, 7);
+	new_client_id = (old_client_id & ~0xffffULL) | (vmid & 0xffffULL);
+	vcpu_set_reg(vcpu, 7, new_client_id);
 
 	// TODO: additional filtering on the SMC calls allowed by the guest
 	__kvm_hyp_host_forward_smc(ctxt);
+
+	// Restore r7 if we changed it. See hyp-main.c for the rationale.
+	if (vcpu_get_reg(vcpu, 7) == new_client_id) {
+		vcpu_set_reg(vcpu, 7, old_client_id);
+	}
 	return true;
 }
 
