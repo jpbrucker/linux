@@ -31,6 +31,57 @@ soc/dt
 		https://git.kernel.org/pub/scm/linux/kernel/git/amlogic/linux tags/amlogic-arm64-dt-for-v6.5
 	renesas/dt-2
 		git://git.kernel.org/pub/scm/linux/kernel/git/geert/renesas-devel tags/renesas-dts-for-v6.5-tag2
+	stm32/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/atorgue/stm32 tags/stm32-dt-for-v6.5-1
+	tegra/dt-bindings
+		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-6.5-dt-bindings
+	tegra/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-6.5-arm64-dt
+	sunxi/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/sunxi/linux tags/sunxi-dt-for-6.5-1
+	imx/dt-bindings
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-bindings-6.5
+	imx/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-dt-6.5
+	imx/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-dt64-6.5
+	qcom/dt64
+		https://git.kernel.org/pub/scm/linux/kernel/git/qcom/linux tags/qcom-arm64-for-6.5
+	qcom/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/qcom/linux tags/qcom-dts-for-6.5
+	rockchip/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v6.5-rockchip-dts64-1
+	patch
+		arm64: dts: exynos: Remove clock from Exynos850 pmu_system_controller
+	riscv/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/conor/linux tags/riscv-dt-for-v6.5
+	zynq/dt64
+		https://github.com/Xilinx/linux-xlnx tags/zynqmp-dt-for-v6.5
+	k3/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/ti/linux tags/ti-k3-dt-for-v6.5
+	qcom/dt64-2
+qcom/dt64=2
+		https://git.kernel.org/pub/scm/linux/kernel/git/qcom/linux tags/qcom-arm64-for-6.5-2
+	mediatek/dt32
+		https://git.kernel.org/pub/scm/linux/kernel/git/matthias.bgg/linux tags/v6.4-next-dts32
+	qcom/dt32-2
+		https://git.kernel.org/pub/scm/linux/kernel/git/qcom/linux tags/qcom-dts-for-6.5-2
+	keystone2/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/ti/linux tags/ti-keystone-dt-for-v6.5
+	mediatek/dt64
+		https://git.kernel.org/pub/scm/linux/kernel/git/matthias.bgg/linux tags/v6.4-next-dts64
+	mvebu/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/gclement/mvebu tags/mvebu-dt-6.5-1
+	mvebu/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/gclement/mvebu tags/mvebu-dt64-6.5-1
+	patch
+		arm: dts: Enable device-tree overlay support for AT91 boards
+	broadcom/dt
+		https://github.com/Broadcom/stblinux tags/arm-soc/for-6.5/devicetree
+	broadcom/dt64
+		https://github.com/Broadcom/stblinux tags/arm-soc/for-6.5/devicetree-arm64
+	riscv/dt-2
+		https://git.kernel.org/pub/scm/linux/kernel/git/conor/linux tags/riscv-dt-for-v6.5-pt2
 
 soc/drivers
 	renesas/drivers
@@ -57,22 +108,8 @@ arm/late
 soc/fixes
 
 arm/fixes
-	<no branch> (925a80af6106a55fa6bcfedc5bd2f02b0b835495)
-		https://git.kernel.org/pub/scm/linux/kernel/git/qcom/linux tags/qcom-dts-fixes-for-6.4
-	<no branch> (cbd77119b6355872cd308a60e99f9ca678435d15)
-		https://git.kernel.org/pub/scm/linux/kernel/git/qcom/linux tags/qcom-driver-fixes-for-6.4
-	<no branch> (661a4f089317c877aecd598fb70cd46510cc8d29)
-		https://git.kernel.org/pub/scm/linux/kernel/git/qcom/linux tags/qcom-arm64-fixes-for-6.4
-	<no branch> (6b0db163ff9200a55dc77a652dad1d4b0a853f63)
-		https://git.kernel.org/pub/scm/linux/kernel/git/at91/linux tags/at91-fixes-6.4
-	patch
-		ARM: dts: Fix erroneous ADS touchscreen polarities
-	<no branch> (3aa0519a4780f1b8e11966bd879d4a2934ba455f)
-		git://git.kernel.org/pub/scm/linux/kernel/git/sudeep.holla/linux tags/ffa-fix-6.4-2
-	<no branch> (436eeae0411acdfc54521ddea80ee76d4ae8a7ea)
-		https://git.linaro.org/people/jens.wiklander/linux-tee tags/amdtee-fix-for-v6.5
-	<no branch> (9bf2e534313fcf420367668cc1f30e10469901dc)
-		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-fixes-6.4-2
+	<no branch> (568a67e742dfa90b19a23305317164c5c350b71e)
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v6.4-rockchip-dtsfixes1
 
 soc/arm
 	patch
@@ -94,6 +131,10 @@ soc/arm
 		Input: ads7846 - Fix usage of match data
 	omap/cleanup
 		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v6.5/cleanup-signed
+	samsung/soc
+		https://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-soc-6.5
+	patch
+		Input: ads7846 - fix pointer cast warning
 
 soc/defconfig
 	renesas/defconfig
@@ -109,4 +150,7 @@ soc/newsoc
 	patch
 		reset: RESET_NUVOTON_MA35D1 should depend on ARCH_MA35
 		Documentation/process: add soc maintainer handbook
+	stm32/stm32mp25
+		git://git.kernel.org/pub/scm/linux/kernel/git/atorgue/stm32 tags/stm32-mp25-for-v6.5-1
+		contains stm32/dt
 
