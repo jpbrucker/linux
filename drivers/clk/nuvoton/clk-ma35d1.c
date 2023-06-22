@@ -12,6 +12,8 @@
 #include <linux/spinlock.h>
 #include <dt-bindings/clock/nuvoton,ma35d1-clk.h>
 
+#include "clk-ma35d1.h"
+
 static DEFINE_SPINLOCK(ma35d1_lock);
 
 #define PLL_MAX_NUM		5
@@ -20,19 +22,19 @@ static DEFINE_SPINLOCK(ma35d1_lock);
 #define REG_CLK_PWRCTL		0x00
 #define REG_CLK_SYSCLK0		0x04
 #define REG_CLK_SYSCLK1		0x08
-#define REG_CLK_APBCLK0		0x0C
+#define REG_CLK_APBCLK0		0x0c
 #define REG_CLK_APBCLK1		0x10
 #define REG_CLK_APBCLK2		0x14
 #define REG_CLK_CLKSEL0		0x18
-#define REG_CLK_CLKSEL1		0x1C
+#define REG_CLK_CLKSEL1		0x1c
 #define REG_CLK_CLKSEL2		0x20
 #define REG_CLK_CLKSEL3		0x24
 #define REG_CLK_CLKSEL4		0x28
-#define REG_CLK_CLKDIV0		0x2C
+#define REG_CLK_CLKDIV0		0x2c
 #define REG_CLK_CLKDIV1		0x30
 #define REG_CLK_CLKDIV2		0x34
 #define REG_CLK_CLKDIV3		0x38
-#define REG_CLK_CLKDIV4		0x3C
+#define REG_CLK_CLKDIV4		0x3c
 #define REG_CLK_CLKOCTL		0x40
 #define REG_CLK_STATUS		0x50
 #define REG_CLK_PLL0CTL0	0x60
@@ -42,194 +44,317 @@ static DEFINE_SPINLOCK(ma35d1_lock);
 #define REG_CLK_PLL3CTL0	0x90
 #define REG_CLK_PLL3CTL1	0x94
 #define REG_CLK_PLL3CTL2	0x98
-#define REG_CLK_PLL4CTL0	0xA0
-#define REG_CLK_PLL4CTL1	0xA4
-#define REG_CLK_PLL4CTL2	0xA8
-#define REG_CLK_PLL5CTL0	0xB0
-#define REG_CLK_PLL5CTL1	0xB4
-#define REG_CLK_PLL5CTL2	0xB8
-#define REG_CLK_CLKDCTL		0xC0
-#define REG_CLK_CLKDSTS		0xC4
-#define REG_CLK_CDUPB		0xC8
-#define REG_CLK_CDLOWB		0xCC
-#define REG_CLK_CKFLTRCTL	0xD0
-#define REG_CLK_TESTCLK		0xF0
+#define REG_CLK_PLL4CTL0	0xa0
+#define REG_CLK_PLL4CTL1	0xa4
+#define REG_CLK_PLL4CTL2	0xa8
+#define REG_CLK_PLL5CTL0	0xb0
+#define REG_CLK_PLL5CTL1	0xb4
+#define REG_CLK_PLL5CTL2	0xb8
+#define REG_CLK_CLKDCTL		0xc0
+#define REG_CLK_CLKDSTS		0xc4
+#define REG_CLK_CDUPB		0xc8
+#define REG_CLK_CDLOWB		0xcc
+#define REG_CLK_CKFLTRCTL	0xd0
+#define REG_CLK_TESTCLK		0xf0
 #define REG_CLK_PLLCTL		0x40
 
 #define PLL_MODE_INT            0
 #define PLL_MODE_FRAC           1
 #define PLL_MODE_SS             2
 
-struct clk_hw *ma35d1_reg_clk_pll(struct device *dev, u32 id, u8 u8mode,
-				  const char *name, struct clk_hw *parent_hw,
-				  void __iomem *base);
-struct clk_hw *ma35d1_reg_adc_clkdiv(struct device *dev, const char *name,
-				     struct clk_hw *hw, spinlock_t *lock,
-				     unsigned long flags, void __iomem *reg,
-				     u8 shift, u8 width, u32 mask_bit);
-
 static const struct clk_parent_data ca35clk_sel_clks[] = {
-	{ .index = 0 },  /* HXT */
-	{ .index = 1 },  /* CAPLL */
-	{ .index = 2 }   /* DDRPLL */
+	{ .fw_name = "hxt", },
+	{ .fw_name = "capll", },
+	{ .fw_name = "ddrpll", },
 };
 
-static const char *const sysclk0_sel_clks[] = {
-	"epll_div2", "syspll"
+static const struct clk_parent_data sysclk0_sel_clks[] = {
+	{ .fw_name = "epll_div2", },
+	{ .fw_name = "syspll", },
 };
 
-static const char *const sysclk1_sel_clks[] = {
-	"hxt", "syspll"
+static const struct clk_parent_data sysclk1_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "syspll", },
 };
 
-static const char *const axiclk_sel_clks[] = {
-	"capll_div2", "capll_div4"
+static const struct clk_parent_data axiclk_sel_clks[] = {
+	{ .fw_name = "capll_div2", },
+	{ .fw_name = "capll_div4", },
 };
 
-static const char *const ccap_sel_clks[] = {
-	"hxt", "vpll", "apll", "syspll"
+static const struct clk_parent_data ccap_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "vpll", },
+	{ .fw_name = "apll", },
+	{ .fw_name = "syspll", },
 };
 
-static const char *const sdh_sel_clks[] = {
-	"syspll", "apll", "dummy", "dummy"
+static const struct clk_parent_data sdh_sel_clks[] = {
+	{ .fw_name = "syspll", },
+	{ .fw_name = "apll", },
 };
 
-static const char *const dcu_sel_clks[] = {
-	"epll_div2", "syspll"
+static const struct clk_parent_data dcu_sel_clks[] = {
+	{ .fw_name = "epll_div2", },
+	{ .fw_name = "syspll", },
 };
 
-static const char *const gfx_sel_clks[] = {
-	"epll", "syspll"
+static const struct clk_parent_data gfx_sel_clks[] = {
+	{ .fw_name = "epll", },
+	{ .fw_name = "syspll", },
 };
 
-static const char *const dbg_sel_clks[] = {
-	"hirc", "syspll"
+static const struct clk_parent_data dbg_sel_clks[] = {
+	{ .fw_name = "hirc", },
+	{ .fw_name = "syspll", },
 };
 
-static const char *const timer0_sel_clks[] = {
-	"hxt", "lxt", "pclk0", "dummy", "dummy", "lirc", "dummy", "hirc"
+static const struct clk_parent_data timer0_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "pclk0", },
+	{ .index = -1, },
+	{ .index = -1, },
+	{ .fw_name = "lirc", },
+	{ .index = -1, },
+	{ .fw_name = "hirc", },
 };
 
-static const char *const timer1_sel_clks[] = {
-	"hxt", "lxt", "pclk0", "dummy", "dummy", "lirc", "dummy", "hirc"
+static const struct clk_parent_data timer1_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "pclk0", },
+	{ .index = -1, },
+	{ .index = -1, },
+	{ .fw_name = "lirc", },
+	{ .index = -1, },
+	{ .fw_name = "hirc", },
 };
 
-static const char *const timer2_sel_clks[] = {
-	"hxt", "lxt", "pclk1", "dummy", "dummy", "lirc", "dummy", "hirc"
+static const struct clk_parent_data timer2_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "pclk1", },
+	{ .index = -1, },
+	{ .index = -1, },
+	{ .fw_name = "lirc", },
+	{ .index = -1, },
+	{ .fw_name = "hirc", },
 };
 
-static const char *const timer3_sel_clks[] = {
-	"hxt", "lxt", "pclk1", "dummy", "dummy", "lirc", "dummy", "hirc"
+static const struct clk_parent_data timer3_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "pclk1", },
+	{ .index = -1, },
+	{ .index = -1, },
+	{ .fw_name = "lirc", },
+	{ .index = -1, },
+	{ .fw_name = "hirc", },
 };
 
-static const char *const timer4_sel_clks[] = {
-	"hxt", "lxt", "pclk2", "dummy", "dummy", "lirc", "dummy", "hirc"
+static const struct clk_parent_data timer4_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "pclk2", },
+	{ .index = -1, },
+	{ .index = -1, },
+	{ .fw_name = "lirc", },
+	{ .index = -1, },
+	{ .fw_name = "hirc", },
 };
 
-static const char *const timer5_sel_clks[] = {
-	"hxt", "lxt", "pclk2", "dummy", "dummy", "lirc", "dummy", "hirc"
+static const struct clk_parent_data timer5_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "pclk2", },
+	{ .index = -1, },
+	{ .index = -1, },
+	{ .fw_name = "lirc", },
+	{ .index = -1, },
+	{ .fw_name = "hirc", },
 };
 
-static const char *const timer6_sel_clks[] = {
-	"hxt", "lxt", "pclk0", "dummy", "dummy", "lirc", "dummy", "hirc"
+static const struct clk_parent_data timer6_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "pclk0", },
+	{ .index = -1, },
+	{ .index = -1, },
+	{ .fw_name = "lirc", },
+	{ .index = -1, },
+	{ .fw_name = "hirc", },
 };
 
-static const char *const timer7_sel_clks[] = {
-	"hxt", "lxt", "pclk0", "dummy", "dummy", "lirc", "dummy", "hirc"
+static const struct clk_parent_data timer7_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "pclk0", },
+	{ .index = -1, },
+	{ .index = -1, },
+	{ .fw_name = "lirc", },
+	{ .index = -1, },
+	{ .fw_name = "hirc", },
 };
 
-static const char *const timer8_sel_clks[] = {
-	"hxt", "lxt", "pclk1", "dummy", "dummy", "lirc", "dummy", "hirc"
+static const struct clk_parent_data timer8_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "pclk1", },
+	{ .index = -1, },
+	{ .index = -1, },
+	{ .fw_name = "lirc", },
+	{ .index = -1, },
+	{ .fw_name = "hirc", },
 };
 
-static const char *const timer9_sel_clks[] = {
-	"hxt", "lxt", "pclk1", "dummy", "dummy", "lirc", "dummy", "hirc"
+static const struct clk_parent_data timer9_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "pclk1", },
+	{ .index = -1, },
+	{ .index = -1, },
+	{ .fw_name = "lirc", },
+	{ .index = -1, },
+	{ .fw_name = "hirc", },
 };
 
-static const char *const timer10_sel_clks[] = {
-	"hxt", "lxt", "pclk2", "dummy", "dummy", "lirc", "dummy", "hirc"
+static const struct clk_parent_data timer10_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "pclk2", },
+	{ .index = -1, },
+	{ .index = -1, },
+	{ .fw_name = "lirc", },
+	{ .index = -1, },
+	{ .fw_name = "hirc", },
 };
 
-static const char *const timer11_sel_clks[] = {
-	"hxt", "lxt", "pclk2", "dummy", "dummy", "lirc", "dummy", "hirc"
+static const struct clk_parent_data timer11_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "pclk2", },
+	{ .index = -1, },
+	{ .index = -1, },
+	{ .fw_name = "lirc", },
+	{ .index = -1, },
+	{ .fw_name = "hirc", },
 };
 
-static const char *const uart_sel_clks[] = {
-	"hxt", "sysclk1_div2", "dummy", "dummy"
+static const struct clk_parent_data uart_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "sysclk1_div2", },
 };
 
-static const char *const wdt0_sel_clks[] = {
-	"dummy", "lxt", "pclk3_div4096", "lirc"
+static const struct clk_parent_data wdt0_sel_clks[] = {
+	{ .index = -1, },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "pclk3_div4096", },
+	{ .fw_name = "lirc", },
 };
 
-static const char *const wdt1_sel_clks[] = {
-	"dummy", "lxt", "pclk3_div4096", "lirc"
+static const struct clk_parent_data wdt1_sel_clks[] = {
+	{ .index = -1, },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "pclk3_div4096", },
+	{ .fw_name = "lirc", },
 };
 
-static const char *const wdt2_sel_clks[] = {
-	"dummy", "lxt", "pclk4_div4096", "lirc"
+static const struct clk_parent_data wdt2_sel_clks[] = {
+	{ .index = -1, },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "pclk4_div4096", },
+	{ .fw_name = "lirc", },
 };
 
-static const char *const wwdt0_sel_clks[] = {
-	"dummy", "dummy", "pclk3_div4096", "lirc"
+static const struct clk_parent_data wwdt0_sel_clks[] = {
+	{ .index = -1, },
+	{ .index = -1, },
+	{ .fw_name = "pclk3_div4096", },
+	{ .fw_name = "lirc", },
 };
 
-static const char *const wwdt1_sel_clks[] = {
-	"dummy", "dummy", "pclk3_div4096", "lirc"
+static const struct clk_parent_data wwdt1_sel_clks[] = {
+	{ .index = -1, },
+	{ .index = -1, },
+	{ .fw_name = "pclk3_div4096", },
+	{ .fw_name = "lirc", },
 };
 
-static const char *const wwdt2_sel_clks[] = {
-	"dummy", "dummy", "pclk4_div4096", "lirc"
+static const struct clk_parent_data wwdt2_sel_clks[] = {
+	{ .index = -1, },
+	{ .index = -1, },
+	{ .fw_name = "pclk4_div4096", },
+	{ .fw_name = "lirc", },
 };
 
-static const char *const spi0_sel_clks[] = {
-	"pclk1", "apll", "dummy", "dummy"
+static const struct clk_parent_data spi0_sel_clks[] = {
+	{ .fw_name = "pclk1", },
+	{ .fw_name = "apll", },
 };
 
-static const char *const spi1_sel_clks[] = {
-	"pclk2", "apll", "dummy", "dummy"
+static const struct clk_parent_data spi1_sel_clks[] = {
+	{ .fw_name = "pclk2", },
+	{ .fw_name = "apll", },
 };
 
-static const char *const spi2_sel_clks[] = {
-	"pclk1", "apll", "dummy", "dummy"
+static const struct clk_parent_data spi2_sel_clks[] = {
+	{ .fw_name = "pclk1", },
+	{ .fw_name = "apll", },
 };
 
-static const char *const spi3_sel_clks[] = {
-	"pclk2", "apll", "dummy", "dummy"
+static const struct clk_parent_data spi3_sel_clks[] = {
+	{ .fw_name = "pclk2", },
+	{ .fw_name = "apll", },
 };
 
-static const char *const qspi0_sel_clks[] = {
-	"pclk0", "apll", "dummy", "dummy"
+static const struct clk_parent_data qspi0_sel_clks[] = {
+	{ .fw_name = "pclk0", },
+	{ .fw_name = "apll", },
 };
 
-static const char *const qspi1_sel_clks[] = {
-	"pclk0", "apll", "dummy", "dummy"
+static const struct clk_parent_data qspi1_sel_clks[] = {
+	{ .fw_name = "pclk0", },
+	{ .fw_name = "apll", },
 };
 
-static const char *const i2s0_sel_clks[] = {
-	"apll", "sysclk1_div2", "dummy", "dummy"
+static const struct clk_parent_data i2s0_sel_clks[] = {
+	{ .fw_name = "apll", },
+	{ .fw_name = "sysclk1_div2", },
 };
 
-static const char *const i2s1_sel_clks[] = {
-	"apll", "sysclk1_div2", "dummy", "dummy"
+static const struct clk_parent_data i2s1_sel_clks[] = {
+	{ .fw_name = "apll", },
+	{ .fw_name = "sysclk1_div2", },
 };
 
-static const char *const can_sel_clks[] = {
-	"apll", "vpll"
+static const struct clk_parent_data can_sel_clks[] = {
+	{ .fw_name = "apll", },
+	{ .fw_name = "vpll", },
 };
 
-static const char *const cko_sel_clks[] = {
-	"hxt", "lxt", "hirc", "lirc", "capll_div4", "syspll",
-	"ddrpll", "epll_div2", "apll", "vpll", "dummy", "dummy",
-	"dummy", "dummy", "dummy", "dummy"
+static const struct clk_parent_data cko_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "lxt", },
+	{ .fw_name = "hirc", },
+	{ .fw_name = "lirc", },
+	{ .fw_name = "capll_div4", },
+	{ .fw_name = "syspll", },
+	{ .fw_name = "ddrpll", },
+	{ .fw_name = "epll_div2", },
+	{ .fw_name = "apll", },
+	{ .fw_name = "vpll", },
 };
 
-static const char *const smc_sel_clks[] = {
-	"hxt", "pclk4"
+static const struct clk_parent_data smc_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "pclk4", },
 };
 
-static const char *const kpi_sel_clks[] = {
-	"hxt", "lxt"
+static const struct clk_parent_data kpi_sel_clks[] = {
+	{ .fw_name = "hxt", },
+	{ .fw_name = "lxt", },
 };
 
 static const struct clk_div_table ip_div_table[] = {
@@ -261,11 +386,12 @@ static struct clk_hw *ma35d1_clk_mux_parent(struct device *dev, const char *name
 
 static struct clk_hw *ma35d1_clk_mux(struct device *dev, const char *name,
 				     void __iomem *reg, u8 shift, u8 width,
-				     const char *const *parents, int num_parents)
+				     const struct clk_parent_data *pdata,
+				     int num_pdata)
 {
-	return devm_clk_hw_register_mux(dev, name, parents, num_parents,
-					CLK_SET_RATE_NO_REPARENT, reg, shift,
-					width, 0, &ma35d1_lock);
+	return clk_hw_register_mux_parent_data(dev, name, pdata, num_pdata,
+					       CLK_SET_RATE_NO_REPARENT, reg, shift,
+					       width, 0, &ma35d1_lock);
 }
 
 static struct clk_hw *ma35d1_clk_divider(struct device *dev, const char *name,
