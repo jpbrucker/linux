@@ -1967,10 +1967,11 @@ void __cifs_put_smb_ses(struct cifs_ses *ses)
 		spin_unlock(&cifs_tcp_ses_lock);
 		return;
 	}
-	spin_unlock(&cifs_tcp_ses_lock);
 
 	/* ses_count can never go negative */
 	WARN_ON(ses->ses_count < 0);
+	list_del_init(&ses->smb_ses_list);
+	spin_unlock(&cifs_tcp_ses_lock);
 
 	spin_lock(&ses->ses_lock);
 	if (ses->ses_status == SES_GOOD)
@@ -1990,9 +1991,6 @@ void __cifs_put_smb_ses(struct cifs_ses *ses)
 		cifs_free_ipc(ses);
 	}
 
-	spin_lock(&cifs_tcp_ses_lock);
-	list_del_init(&ses->smb_ses_list);
-	spin_unlock(&cifs_tcp_ses_lock);
 
 	chan_count = ses->chan_count;
 
