@@ -220,11 +220,23 @@ void pkvm_destroy_hyp_vm(struct kvm *host_kvm)
 	struct kvm_vcpu *host_vcpu;
 	struct rb_node *node;
 	unsigned long idx;
+	int ret;
 
 	if (!host_kvm->arch.pkvm.handle)
 		goto out_free;
 
-	WARN_ON(kvm_call_hyp_nvhe(__pkvm_start_teardown_vm, host_kvm->arch.pkvm.handle));
+	while (true) {
+		ret = kvm_call_hyp_nvhe(__pkvm_start_teardown_vm,
+					host_kvm->arch.pkvm.handle);
+		if (ret != 0) {
+			WARN_ON(ret);
+			pr_warn("start teardown returned: %d\n", ret);
+			cond_resched();
+		} else {
+			break;
+		}
+	}
+
 	node = rb_first(&host_kvm->arch.pkvm.pinned_pages);
 	while (node) {
 		ppage = rb_entry(node, struct kvm_pinned_page, node);

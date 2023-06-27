@@ -40,6 +40,16 @@
 #include <nvhe/trap_handler.h>
 #include <nvhe/spinlock.h>
 
+#define	SMC_ENTITY_TRUSTED_OS		50	/* Trusted OS calls */
+#define SMC_NR(entity, fn, fastcall, smc64) ((((fastcall) & 0x1U) << 31) | \
+					     (((smc64) & 0x1U) << 30) | \
+					     (((entity) & 0x3FU) << 24) | \
+					     ((fn) & 0xFFFFU) \
+					    )
+
+#define SMC_STDCALL_NR(entity, fn)      SMC_NR((entity), (fn), 0, 0)
+#define SMC_SC_VIRTIO_STOP      SMC_STDCALL_NR(SMC_ENTITY_TRUSTED_OS, 22)
+
 /*
  * "ID value 0 must be returned at the Non-secure physical FF-A instance"
  * We share this ID with the host.
@@ -193,6 +203,13 @@ static void ffa_retrieve_req(struct arm_smccc_res *res, u32 len)
 	arm_smccc_1_1_smc(FFA_FN64_MEM_RETRIEVE_REQ,
 			  len, len,
 			  0, 0, 0, 0, 0,
+			  res);
+}
+
+static void trusty_stop_virtio(struct arm_smccc_res *res, u32 client_id)
+{
+	arm_smccc_1_1_smc(SMC_SC_VIRTIO_STOP,
+			  0, 0, 0, 0, 0, 0, client_id,
 			  res);
 }
 
@@ -1306,6 +1323,8 @@ out_handled:
 	 * is no guest stage-2 mapping, we will replay the last instruction
 	 * so don't overwrite the registers with the FF-A retval.
 	 */
+
+
 	if (ret == -EFAULT || ret == -ENOMEM)
 		return ret;
 
@@ -1365,7 +1384,7 @@ int guest_ffa_reclaim_memory(struct pkvm_hyp_vm *vm)
 	u32 handle_lo, handle_hi;
 	struct kvm_vcpu *vcpu = &hyp_vcpu->vcpu;
 	struct kvm_cpu_context *ctxt = &vcpu->arch.ctxt;
-	int ret = 0;
+	int ret = 0, retry = 5;
 	struct kvm_s2_mmu *mmu;
 	struct kvm_vmid *kvm_vmid;
 	u64 vmid;
@@ -1386,12 +1405,25 @@ int guest_ffa_reclaim_memory(struct pkvm_hyp_vm *vm)
 		goto unlock;
 	}
 
+	do {
+		trusty_stop_virtio(&res, vmid & U32_MAX);
+	} while (res.a0 == -5 && retry-- > 0);
+	if (retry < 0) {
+		ret = res.a0;
+		goto unlock;
+	}
+
 	list_for_each_entry_safe(transfer_ctxt, tmp_ctxt,
 				 &guest_ctxt->transfers, node) {
 		*req =  (struct ffa_mem_region) {
 			.sender_id      = HOST_FFA_ID,
 			.handle         = transfer_ctxt->ffa_handle,
 		};
+
+		/* TODO: Remove the hack to relinquish the FF-A global memory
+		 * handlers on the Secure OS side once FF-A destroy
+		 * message is implemented.
+		 */
 
 		handle_lo = HANDLE_LOW(transfer_ctxt->ffa_handle);
 		handle_hi = HANDLE_HIGH(transfer_ctxt->ffa_handle);
