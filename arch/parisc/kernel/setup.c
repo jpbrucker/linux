@@ -106,8 +106,6 @@ static void __init dma_ops_init(void)
 }
 #endif
 
-extern void collect_boot_cpu_data(void);
-
 void __init setup_arch(char **cmdline_p)
 {
 #ifdef CONFIG_64BIT
@@ -167,10 +165,7 @@ void __init setup_arch(char **cmdline_p)
 
 /*
  * Display CPU info for all CPUs.
- * for parisc this is in processor.c
  */
-extern int show_cpuinfo (struct seq_file *m, void *v);
-
 static void *
 c_start (struct seq_file *m, loff_t *pos)
 {
