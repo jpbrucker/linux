@@ -323,7 +323,7 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 }
 #endif
 
-long do_syscall_trace_enter(struct pt_regs *regs)
+long notrace do_syscall_trace_enter(struct pt_regs *regs)
 {
 	if (test_thread_flag(TIF_SYSCALL_TRACE)) {
 		int rc = ptrace_report_syscall_entry(regs);
@@ -378,7 +378,7 @@ long do_syscall_trace_enter(struct pt_regs *regs)
 	return (int) ((u32) regs->gr[20]);
 }
 
-void do_syscall_trace_exit(struct pt_regs *regs)
+void notrace do_syscall_trace_exit(struct pt_regs *regs)
 {
 	int stepping = test_thread_flag(TIF_SINGLESTEP) ||
 		test_thread_flag(TIF_BLOCKSTEP);
