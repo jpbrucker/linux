@@ -288,19 +288,30 @@ extern int _parisc_requires_coherency;
 
 extern int running_on_qemu;
 
-extern void start_parisc(void);
 extern void early_trap_init(void);
 
+extern void processor_init(void);
 extern void init_IRQ(void);
 extern void start_cpu_itimer(void);
 extern void do_cpu_irq_mask(struct pt_regs *regs);
 extern irqreturn_t timer_interrupt(int, void *);
 extern irqreturn_t ipi_interrupt(int, void *);
+struct seq_file;
+extern int show_cpuinfo (struct seq_file *, void *);
+extern void collect_boot_cpu_data(void);
 
-extern void __noreturn toc_intr(struct pt_regs *regs);
+extern void __noreturn toc_intr(struct pt_regs *);
 extern void toc_handler(void);
 extern unsigned int toc_handler_size;
 extern unsigned int toc_handler_csum;
+
+/* called from assembly code: */
+extern void start_parisc(void);
+extern void smp_callin(unsigned long pdce_proc);
+extern void sys_rt_sigreturn(struct pt_regs *regs, int in_syscall);
+extern void do_notify_resume(struct pt_regs *regs, long in_syscall);
+extern long do_syscall_trace_enter(struct pt_regs *regs);
+extern void do_syscall_trace_exit(struct pt_regs *regs);
 
 #endif /* __ASSEMBLY__ */
 
