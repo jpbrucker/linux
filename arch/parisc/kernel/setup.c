@@ -45,7 +45,7 @@ struct proc_dir_entry * proc_runway_root __read_mostly = NULL;
 struct proc_dir_entry * proc_gsc_root __read_mostly = NULL;
 struct proc_dir_entry * proc_mckinley_root __read_mostly = NULL;
 
-void __init setup_cmdline(char **cmdline_p)
+static void __init setup_cmdline(char **cmdline_p)
 {
 	extern unsigned int boot_args[];
 	char *p;
@@ -86,7 +86,7 @@ void __init setup_cmdline(char **cmdline_p)
 }
 
 #ifdef CONFIG_PA11
-void __init dma_ops_init(void)
+static void __init dma_ops_init(void)
 {
 	switch (boot_cpu_data.cpu_type) {
 	case pcx:
