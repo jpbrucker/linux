@@ -391,8 +391,6 @@ arch_initcall(parisc_init);
 
 void __init start_parisc(void)
 {
-	extern void early_trap_init(void);
-
 	int ret, cpunum;
 	struct pdc_coproc_cfg coproc_cfg;
 

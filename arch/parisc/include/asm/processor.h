@@ -11,6 +11,7 @@
 
 #ifndef __ASSEMBLY__
 #include <linux/threads.h>
+#include <linux/irqreturn.h>
 
 #include <asm/assembly.h>
 #include <asm/prefetch.h>
@@ -288,6 +289,14 @@ extern int _parisc_requires_coherency;
 extern int running_on_qemu;
 
 extern void start_parisc(void);
+extern void early_trap_init(void);
+
+extern void init_IRQ(void);
+extern void start_cpu_itimer(void);
+extern void do_cpu_irq_mask(struct pt_regs *regs);
+extern irqreturn_t timer_interrupt(int, void *);
+extern irqreturn_t ipi_interrupt(int, void *);
+
 extern void __noreturn toc_intr(struct pt_regs *regs);
 extern void toc_handler(void);
 extern unsigned int toc_handler_size;
