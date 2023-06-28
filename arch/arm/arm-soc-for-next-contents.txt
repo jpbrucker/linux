@@ -1,0 +1,213 @@
+arm/soc
+
+soc/dt
+	dt/cleanup
+		https://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux-dt tags/dt64-cleanup-6.5
+	dt/cleanup32
+		https://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux-dt tags/dt-cleanup-6.5
+	renesas/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/geert/renesas-devel tags/renesas-dts-for-v6.5-tag1
+	s32/dt
+		https://github.com/chesterlintw/linux-s32g tags/s32g2-dt-6.5
+	ux500/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-nomadik tags/ux500-dts-for-v6.5
+	at91/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/at91/linux tags/at91-dt-6.5
+	samsung/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt-6.5
+	omap/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v6.5/dt-signed
+	omap/dt-pinctrl
+		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v6.5/dt-pin-nodes-signed
+	zynq/dt
+		https://github.com/Xilinx/linux-xlnx tags/zynq-dt-for-v6.5
+	hisi/dt
+		https://github.com/hisilicon/linux-hisi tags/hisi-arm32-dt-for-6.5
+	hisi/dt64
+		https://github.com/hisilicon/linux-hisi tags/hisi-arm64-dt-for-6.5
+	amlogic/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/amlogic/linux tags/amlogic-arm-dt-for-v6.5
+	amlogic/dt64
+		https://git.kernel.org/pub/scm/linux/kernel/git/amlogic/linux tags/amlogic-arm64-dt-for-v6.5
+	renesas/dt-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/geert/renesas-devel tags/renesas-dts-for-v6.5-tag2
+	stm32/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/atorgue/stm32 tags/stm32-dt-for-v6.5-1
+	tegra/dt-bindings
+		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-6.5-dt-bindings
+	tegra/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-6.5-arm64-dt
+	sunxi/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/sunxi/linux tags/sunxi-dt-for-6.5-1
+	imx/dt-bindings
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-bindings-6.5
+	imx/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-dt-6.5
+	imx/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-dt64-6.5
+	qcom/dt64
+		https://git.kernel.org/pub/scm/linux/kernel/git/qcom/linux tags/qcom-arm64-for-6.5
+	qcom/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/qcom/linux tags/qcom-dts-for-6.5
+	rockchip/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v6.5-rockchip-dts64-1
+	patch
+		arm64: dts: exynos: Remove clock from Exynos850 pmu_system_controller
+	riscv/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/conor/linux tags/riscv-dt-for-v6.5
+	zynq/dt64
+		https://github.com/Xilinx/linux-xlnx tags/zynqmp-dt-for-v6.5
+	k3/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/ti/linux tags/ti-k3-dt-for-v6.5
+	qcom/dt64-2
+qcom/dt64=2
+		https://git.kernel.org/pub/scm/linux/kernel/git/qcom/linux tags/qcom-arm64-for-6.5-2
+	mediatek/dt32
+		https://git.kernel.org/pub/scm/linux/kernel/git/matthias.bgg/linux tags/v6.4-next-dts32
+	qcom/dt32-2
+		https://git.kernel.org/pub/scm/linux/kernel/git/qcom/linux tags/qcom-dts-for-6.5-2
+	keystone2/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/ti/linux tags/ti-keystone-dt-for-v6.5
+	mediatek/dt64
+		https://git.kernel.org/pub/scm/linux/kernel/git/matthias.bgg/linux tags/v6.4-next-dts64
+	mvebu/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/gclement/mvebu tags/mvebu-dt-6.5-1
+	mvebu/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/gclement/mvebu tags/mvebu-dt64-6.5-1
+	patch
+		arm: dts: Enable device-tree overlay support for AT91 boards
+	broadcom/dt
+		https://github.com/Broadcom/stblinux tags/arm-soc/for-6.5/devicetree
+	broadcom/dt64
+		https://github.com/Broadcom/stblinux tags/arm-soc/for-6.5/devicetree-arm64
+	riscv/dt-2
+		https://git.kernel.org/pub/scm/linux/kernel/git/conor/linux tags/riscv-dt-for-v6.5-pt2
+	at91/dt-2
+		https://git.kernel.org/pub/scm/linux/kernel/git/at91/linux tags/at91-dt-6.5-2
+	arm/dt-move
+		git://git.kernel.org/pub/scm/linux/kernel/git/robh/linux tags/arm-dts-mv-for-6.5
+	patch
+		ARM: mvebu: fix unit address on armada-390-db flash
+
+soc/drivers
+	renesas/drivers
+		git://git.kernel.org/pub/scm/linux/kernel/git/geert/renesas-devel tags/renesas-drivers-for-v6.5-tag1
+	drivers/reset
+		git://git.pengutronix.de/pza/linux tags/reset-for-v6.5
+	patch
+		arm-cci: add cci_enable_port_for_self prototype
+	drivers/sram
+		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-nomadik tags/sram-for-soc
+	renesas/drivers-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/geert/renesas-devel tags/renesas-drivers-for-v6.5-tag2
+	samsung/drivers
+		https://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-drivers-6.5
+	omap/ti-sysc
+		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v6.5/ti-sysc-signed
+	zynq/soc
+		https://github.com/Xilinx/linux-xlnx tags/zynqmp-soc-for-v6.5
+	tegra/soc
+		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-6.5-soc
+	tegra/firmware
+		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-6.5-firmware
+	tegra/memory
+		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-6.5-memory
+	tegra/pci
+		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-6.5-pci
+	qcom/drivers
+		https://git.kernel.org/pub/scm/linux/kernel/git/qcom/linux tags/qcom-drivers-for-6.5
+	mediatek/soc
+		https://git.kernel.org/pub/scm/linux/kernel/git/matthias.bgg/linux tags/v6.4-next-soc
+	qcom/drivers-2
+		https://git.kernel.org/pub/scm/linux/kernel/git/qcom/linux tags/qcom-drivers-for-6.5-2
+	ti/drivers
+		https://git.kernel.org/pub/scm/linux/kernel/git/ti/linux tags/ti-driver-soc-for-v6.5
+	amlogic/drivers
+		https://git.kernel.org/pub/scm/linux/kernel/git/amlogic/linux tags/amlogic-drivers-for-v6.5
+	rockchip/drivers
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v6.5-rockchip-drivers1
+	drivers/scmi
+		git://git.kernel.org/pub/scm/linux/kernel/git/sudeep.holla/linux tags/scmi-updates-6.5
+	drivers/memory
+		https://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux-mem-ctrl tags/memory-controller-drv-6.5
+	<no branch> (6a8b7e80105416cc7324fda295608ea2d3f98862)
+		https://git.linaro.org/people/jens.wiklander/linux-tee tags/optee-use-kmemdup-for-6.5
+
+arm/defconfig
+
+arm/late
+
+soc/fixes
+
+arm/fixes
+	<no branch> (568a67e742dfa90b19a23305317164c5c350b71e)
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v6.4-rockchip-dtsfixes1
+
+soc/arm
+	patch
+		ARM: davinci: fix davinci_cpufreq_init() declaration
+		ARM: ep93xx: fix missing-prototype warnings
+		ARM: highbank: add missing include
+		ARM: imx: add missing include
+		ARM: lpc32xx: add missing include
+		ARM: omap1: add missing include
+		ARM: omap2: fix missing tick_broadcast() prototype
+		ARM: orion5x: fix d2net gpio initialization
+		ARM: pxa: fix missing-prototypes warnings
+		ARM: sa1100: address missing prototype warnings
+		ARM: spear: include "pl080.h" for pl080_get_signal() prototype
+		ARM: versatile: mark mmc_status() static
+	omap/gpio-desc
+		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-gpio tags/gpio-omap-descriptors-v6.5
+	patch
+		Input: ads7846 - Fix usage of match data
+	omap/cleanup
+		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v6.5/cleanup-signed
+	samsung/soc
+		https://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-soc-6.5
+	patch
+		Input: ads7846 - fix pointer cast warning
+	<no branch> (825edae7d1c39171634253203f03cf6c6cf380bc)
+		https://github.com/Broadcom/stblinux tags/arm-soc/for-6.5/maintainers
+	patch
+		ARM: omap2: Fix copy/paste bug
+
+soc/defconfig
+	renesas/defconfig
+		git://git.kernel.org/pub/scm/linux/kernel/git/geert/renesas-devel tags/renesas-arm-defconfig-for-v6.5-tag1
+	patch
+		arm64: defconfig: Enable ARCH_SPARX5 and ARCH_REALTEK
+	renesas/defconfig-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/geert/renesas-devel tags/renesas-arm-defconfig-for-v6.5-tag2
+	imx/defconfig
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-defconfig-6.5
+	qcom/defconfig
+		https://git.kernel.org/pub/scm/linux/kernel/git/qcom/linux tags/qcom-arm64-defconfig-for-6.5
+	qcom/defconfig-2
+		https://git.kernel.org/pub/scm/linux/kernel/git/qcom/linux tags/qcom-arm64-defconfig-for-6.5-2
+	k3/defconfig
+		https://git.kernel.org/pub/scm/linux/kernel/git/ti/linux tags/ti-k3-config-for-v6.5
+	mediatek/defconfig
+		https://git.kernel.org/pub/scm/linux/kernel/git/matthias.bgg/linux tags/v6.4-next-defconfig
+	patch
+		ARM: multi_v7_defconfig: update MFD_RK808 name
+		arm64: defconfig: update RK8XX MFD config
+		arm64: defconfig: Enable Rockchip I2S TDM and ES8316 drivers
+
+soc/newsoc
+	nuvoton/ma35d1
+		Merge branch 'nuvoton/ma35d1' into soc/newsoc
+	patch
+		reset: RESET_NUVOTON_MA35D1 should depend on ARCH_MA35
+		Documentation/process: add soc maintainer handbook
+	stm32/stm32mp25
+		git://git.kernel.org/pub/scm/linux/kernel/git/atorgue/stm32 tags/stm32-mp25-for-v6.5-1
+		contains stm32/dt
+	patch
+		remoteproc: stm32: use correct format strings on 64-bit
+		clk: nuvoton: Add clk-ma35d1.h for driver extern functions
+		clk: nuvoton: Update all constant hex values to lowercase
+		clk: nuvoton: Use clk_parent_data instead of string for parent clock
+	fsl/drivers
+		git://git.kernel.org/pub/scm/linux/kernel/git/leo/linux tags/soc-fsl-next-v6.5
+
