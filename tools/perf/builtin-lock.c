@@ -48,7 +48,7 @@ static struct target target;
 #define LOCKHASH_BITS		12
 #define LOCKHASH_SIZE		(1UL << LOCKHASH_BITS)
 
-static struct hlist_head lockhash_table[LOCKHASH_SIZE];
+static struct hlist_head *lockhash_table;
 
 #define __lockhashfn(key)	hash_long((unsigned long)key, LOCKHASH_BITS)
 #define lockhashentry(key)	(lockhash_table + __lockhashfn((key)))
@@ -911,7 +911,7 @@ static int lock_contention_caller(struct evsel *evsel, struct perf_sample *sampl
 				  char *buf, int size)
 {
 	struct thread *thread;
-	struct callchain_cursor *cursor = &callchain_cursor;
+	struct callchain_cursor *cursor;
 	struct machine *machine = &session->machines.host;
 	struct symbol *sym;
 	int skip = 0;
@@ -924,6 +924,8 @@ static int lock_contention_caller(struct evsel *evsel, struct perf_sample *sampl
 	thread = machine__findnew_thread(machine, -1, sample->pid);
 	if (thread == NULL)
 		return -1;
+
+	cursor = get_tls_callchain_cursor();
 
 	/* use caller function name from the callchain */
 	ret = thread__resolve_callchain(thread, cursor, evsel, sample,
@@ -962,7 +964,7 @@ next:
 
 static u64 callchain_id(struct evsel *evsel, struct perf_sample *sample)
 {
-	struct callchain_cursor *cursor = &callchain_cursor;
+	struct callchain_cursor *cursor;
 	struct machine *machine = &session->machines.host;
 	struct thread *thread;
 	u64 hash = 0;
@@ -973,6 +975,7 @@ static u64 callchain_id(struct evsel *evsel, struct perf_sample *sample)
 	if (thread == NULL)
 		return -1;
 
+	cursor = get_tls_callchain_cursor();
 	/* use caller function name from the callchain */
 	ret = thread__resolve_callchain(thread, cursor, evsel, sample,
 					NULL, NULL, max_stack_depth);
@@ -1771,7 +1774,6 @@ static int __cmd_report(bool display_info)
 	}
 
 	/* for lock function check */
-	symbol_conf.sort_by_name = true;
 	symbol_conf.allow_aliases = true;
 	symbol__init(&session->header.env);
 
@@ -1871,7 +1873,6 @@ static int __cmd_contention(int argc, const char **argv)
 	};
 	struct lock_contention con = {
 		.target = &target,
-		.result = &lockhash_table[0],
 		.map_nr_entries = bpf_map_entries,
 		.max_stack = max_stack_depth,
 		.stack_skip = stack_skip,
@@ -1880,10 +1881,17 @@ static int __cmd_contention(int argc, const char **argv)
 		.owner = show_lock_owner,
 	};
 
+	lockhash_table = calloc(LOCKHASH_SIZE, sizeof(*lockhash_table));
+	if (!lockhash_table)
+		return -ENOMEM;
+
+	con.result = &lockhash_table[0];
+
 	session = perf_session__new(use_bpf ? NULL : &data, &eops);
 	if (IS_ERR(session)) {
 		pr_err("Initializing perf session failed\n");
-		return PTR_ERR(session);
+		err = PTR_ERR(session);
+		goto out_delete;
 	}
 
 	con.machine = &session->machines.host;
@@ -1895,7 +1903,6 @@ static int __cmd_contention(int argc, const char **argv)
 		con.save_callstack = true;
 
 	/* for lock function check */
-	symbol_conf.sort_by_name = true;
 	symbol_conf.allow_aliases = true;
 	symbol__init(&session->header.env);
 
@@ -1983,6 +1990,7 @@ out_delete:
 	evlist__delete(con.evlist);
 	lock_contention_finish();
 	perf_session__delete(session);
+	zfree(&lockhash_table);
 	return err;
 }
 
@@ -2348,6 +2356,10 @@ int cmd_lock(int argc, const char **argv)
 	unsigned int i;
 	int rc = 0;
 
+	lockhash_table = calloc(LOCKHASH_SIZE, sizeof(*lockhash_table));
+	if (!lockhash_table)
+		return -ENOMEM;
+
 	for (i = 0; i < LOCKHASH_SIZE; i++)
 		INIT_HLIST_HEAD(lockhash_table + i);
 
@@ -2369,7 +2381,7 @@ int cmd_lock(int argc, const char **argv)
 		rc = __cmd_report(false);
 	} else if (!strcmp(argv[0], "script")) {
 		/* Aliased to 'perf script' */
-		return cmd_script(argc, argv);
+		rc = cmd_script(argc, argv);
 	} else if (!strcmp(argv[0], "info")) {
 		if (argc) {
 			argc = parse_options(argc, argv,
@@ -2403,5 +2415,6 @@ int cmd_lock(int argc, const char **argv)
 		usage_with_options(lock_usage, lock_options);
 	}
 
+	zfree(&lockhash_table);
 	return rc;
 }
