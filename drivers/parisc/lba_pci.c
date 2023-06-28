@@ -1018,7 +1018,7 @@ static void
 lba_pat_resources(struct parisc_device *pa_dev, struct lba_device *lba_dev)
 {
 	unsigned long bytecnt;
-	long io_count;
+	long io_count __maybe_unused;
 	long status;	/* PDC return status */
 	long pa_count;
 	pdc_pat_cell_mod_maddr_block_t *pa_pdc_cell;	/* PA_VIEW */
