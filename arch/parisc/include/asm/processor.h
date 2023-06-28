@@ -313,6 +313,21 @@ extern void do_notify_resume(struct pt_regs *regs, long in_syscall);
 extern long do_syscall_trace_enter(struct pt_regs *regs);
 extern void do_syscall_trace_exit(struct pt_regs *regs);
 
+/* functions in driver/parisc */
+extern void gsc_init(void);
+extern void processor_init(void);
+extern void ccio_init(void);
+extern void hppb_init(void);
+extern void dino_init(void);
+extern void iosapic_init(void);
+extern void lba_init(void);
+extern void sba_init(void);
+extern void eisa_init(void);
+struct parisc_device;
+struct resource;
+extern void sba_distributed_lmmio(struct parisc_device *, struct resource *);
+extern void sba_directed_lmmio(struct parisc_device *, struct resource *);
+
 #endif /* __ASSEMBLY__ */
 
 #endif /* __ASM_PARISC_PROCESSOR_H */

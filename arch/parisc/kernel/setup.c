@@ -290,16 +290,6 @@ static int __init parisc_init_resources(void)
 	return 0;
 }
 
-extern void gsc_init(void);
-extern void processor_init(void);
-extern void ccio_init(void);
-extern void hppb_init(void);
-extern void dino_init(void);
-extern void iosapic_init(void);
-extern void lba_init(void);
-extern void sba_init(void);
-extern void eisa_init(void);
-
 static int __init parisc_init(void)
 {
 	u32 osid = (OS_ID_LINUX << 16);
