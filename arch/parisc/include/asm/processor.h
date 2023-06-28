@@ -290,7 +290,6 @@ extern int running_on_qemu;
 
 extern void early_trap_init(void);
 
-extern void processor_init(void);
 extern void init_IRQ(void);
 extern void start_cpu_itimer(void);
 extern void do_cpu_irq_mask(struct pt_regs *regs);
