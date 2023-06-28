@@ -591,6 +591,7 @@ int gfs2_quota_hold(struct gfs2_inode *ip, kuid_t uid, kgid_t gid)
 	if (gfs2_assert_warn(sdp, !ip->i_qadata->qa_qd_num) ||
 	    gfs2_assert_warn(sdp, !test_bit(GIF_QD_LOCKED, &ip->i_flags))) {
 		error = -EIO;
+		gfs2_qa_put(ip);
 		goto out;
 	}
 
@@ -711,7 +712,6 @@ static int gfs2_write_buf_to_page(struct gfs2_inode *ip, unsigned long index,
 	struct address_space *mapping = inode->i_mapping;
 	struct page *page;
 	struct buffer_head *bh;
-	void *kaddr;
 	u64 blk;
 	unsigned bsize = sdp->sd_sb.sb_bsize, bnum = 0, boff = 0;
 	unsigned to_write = bytes, pg_off = off;
@@ -763,10 +763,8 @@ static int gfs2_write_buf_to_page(struct gfs2_inode *ip, unsigned long index,
 	}
 
 	/* Write to the page, now that we have setup the buffer(s) */
-	kaddr = kmap_atomic(page);
-	memcpy(kaddr + off, buf, bytes);
+	memcpy_to_page(page, off, buf, bytes);
 	flush_dcache_page(page);
-	kunmap_atomic(kaddr);
 	unlock_page(page);
 	put_page(page);
 
