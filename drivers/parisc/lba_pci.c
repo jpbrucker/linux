@@ -404,7 +404,7 @@ static int elroy_cfg_read(struct pci_bus *bus, unsigned int devfn, int pos, int 
 static void
 lba_wr_cfg(struct lba_device *d, u32 tok, u8 reg, u32 data, u32 size)
 {
-	int error = 0;
+	int error __maybe_unused = 0;
 	u32 arb_mask = 0;
 	u32 error_config = 0;
 	u32 status_control = 0;
@@ -1162,10 +1162,6 @@ lba_pat_resources(struct parisc_device *pa_dev, struct lba_device *lba_dev)
 #define lba_pat_port_ops lba_astro_port_ops
 #define lba_pat_resources(pa_dev, lba_dev)
 #endif	/* CONFIG_64BIT */
-
-
-extern void sba_distributed_lmmio(struct parisc_device *, struct resource *);
-extern void sba_directed_lmmio(struct parisc_device *, struct resource *);
 
 
 static void
