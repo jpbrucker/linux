@@ -328,6 +328,7 @@ struct resource;
 extern void sba_distributed_lmmio(struct parisc_device *, struct resource *);
 extern void sba_directed_lmmio(struct parisc_device *, struct resource *);
 extern void lba_set_iregs(struct parisc_device *lba, u32 ibase, u32 imask);
+extern void ccio_cujo20_fixup(struct parisc_device *dev, u32 iovp);
 
 #endif /* __ASSEMBLY__ */
 
