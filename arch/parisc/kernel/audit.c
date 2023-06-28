@@ -41,7 +41,6 @@ int audit_classify_arch(int arch)
 int audit_classify_syscall(int abi, unsigned syscall)
 {
 #ifdef CONFIG_COMPAT
-	extern int parisc32_classify_syscall(unsigned);
 	if (abi == AUDIT_ARCH_PARISC)
 		return parisc32_classify_syscall(syscall);
 #endif

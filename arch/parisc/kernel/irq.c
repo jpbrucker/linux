@@ -24,9 +24,6 @@
 
 #undef PARISC_IRQ_CR16_COUNTS
 
-extern irqreturn_t timer_interrupt(int, void *);
-extern irqreturn_t ipi_interrupt(int, void *);
-
 #define EIEM_MASK(irq)       (1UL<<(CPU_IRQ_MAX - irq))
 
 /* Bits in EIEM correlate with cpu_irq_action[].

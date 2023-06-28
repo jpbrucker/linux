@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/audit_arch.h>
+#include <asm/processor.h>
 #include <asm/unistd.h>
 
 unsigned int parisc32_dir_class[] = {

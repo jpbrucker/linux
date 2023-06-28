@@ -73,7 +73,7 @@ restore_sigcontext(struct sigcontext __user *sc, struct pt_regs *regs)
 	return err;
 }
 
-void
+asmlinkage void
 sys_rt_sigreturn(struct pt_regs *regs, int in_syscall)
 {
 	struct rt_sigframe __user *frame;
@@ -578,7 +578,7 @@ static void do_signal(struct pt_regs *regs, long in_syscall)
 	restore_saved_sigmask();
 }
 
-void do_notify_resume(struct pt_regs *regs, long in_syscall)
+asmlinkage void do_notify_resume(struct pt_regs *regs, long in_syscall)
 {
 	if (test_thread_flag(TIF_SIGPENDING) ||
 	    test_thread_flag(TIF_NOTIFY_SIGNAL))
