@@ -185,7 +185,7 @@ struct bt_iso_ucast_qos {
 struct bt_iso_bcast_qos {
 	__u8  big;
 	__u8  bis;
-	__u8  sync_interval;
+	__u8  sync_factor;
 	__u8  packing;
 	__u8  framing;
 	struct bt_iso_io_qos in;
@@ -400,6 +400,8 @@ int  bt_sock_register(int proto, const struct net_proto_family *ops);
 void bt_sock_unregister(int proto);
 void bt_sock_link(struct bt_sock_list *l, struct sock *s);
 void bt_sock_unlink(struct bt_sock_list *l, struct sock *s);
+struct sock *bt_sock_alloc(struct net *net, struct socket *sock,
+			   struct proto *prot, int proto, gfp_t prio, int kern);
 int  bt_sock_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 		     int flags);
 int  bt_sock_stream_recvmsg(struct socket *sock, struct msghdr *msg,
