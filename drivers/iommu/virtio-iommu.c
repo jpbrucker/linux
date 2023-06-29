@@ -78,6 +78,10 @@ struct viommu_endpoint {
 	struct viommu_dev		*viommu;
 	struct viommu_domain		*vdomain;
 	struct list_head		resv_regions;
+
+	/* properties of the physical IOMMU */
+	u64				pgsize_bitmap;
+	struct iommu_domain_geometry	geometry;
 };
 
 struct viommu_request {
@@ -511,6 +515,36 @@ static int viommu_add_resv_mem(struct viommu_endpoint *vdev,
 	return 0;
 }
 
+static int viommu_add_pgsize_mask(struct viommu_endpoint *vdev,
+				  struct virtio_iommu_probe_page_size_mask *prop,
+				  size_t len)
+{
+	if (len < sizeof(*prop) || !prop->mask)
+		return -EINVAL;
+	vdev->pgsize_bitmap = le64_to_cpu(prop->mask);
+	return 0;
+}
+
+static int viommu_add_input_range(struct viommu_endpoint *vdev,
+				  struct virtio_iommu_probe_input_range *prop,
+				  size_t len)
+{
+	struct iommu_domain_geometry geometry = {
+		.force_aperture = true,
+	};
+
+	if (len < sizeof(*prop))
+		return -EINVAL;
+
+	geometry.aperture_start = le64_to_cpu(prop->start);
+	geometry.aperture_end = le64_to_cpu(prop->end);
+	if (geometry.aperture_start >= geometry.aperture_end)
+		return -EINVAL;
+
+	vdev->geometry = geometry;
+	return 0;
+}
+
 static int viommu_probe_endpoint(struct viommu_dev *viommu, struct device *dev)
 {
 	int ret;
@@ -547,11 +581,18 @@ static int viommu_probe_endpoint(struct viommu_dev *viommu, struct device *dev)
 
 	while (type != VIRTIO_IOMMU_PROBE_T_NONE &&
 	       cur < viommu->probe_size) {
+		void *buf = prop;
 		len = le16_to_cpu(prop->length) + sizeof(*prop);
 
 		switch (type) {
 		case VIRTIO_IOMMU_PROBE_T_RESV_MEM:
-			ret = viommu_add_resv_mem(vdev, (void *)prop, len);
+			ret = viommu_add_resv_mem(vdev, buf, len);
+			break;
+		case VIRTIO_IOMMU_PROBE_T_PAGE_SIZE_MASK:
+			ret = viommu_add_pgsize_mask(vdev, buf, len);
+			break;
+		case VIRTIO_IOMMU_PROBE_T_INPUT_RANGE:
+			ret = viommu_add_input_range(vdev, buf, len);
 			break;
 		default:
 			dev_err(dev, "unknown viommu prop 0x%x\n", type);
@@ -680,8 +721,8 @@ static int viommu_domain_finalise(struct viommu_endpoint *vdev,
 
 	vdomain->id		= (unsigned int)ret;
 
-	domain->pgsize_bitmap	= viommu->pgsize_bitmap;
-	domain->geometry	= viommu->geometry;
+	domain->pgsize_bitmap	= vdev->pgsize_bitmap;
+	domain->geometry	= vdev->geometry;
 
 	vdomain->map_flags	= viommu->map_flags;
 	vdomain->viommu		= viommu;
@@ -717,6 +758,28 @@ static void viommu_domain_free(struct iommu_domain *domain)
 	kfree(vdomain);
 }
 
+static bool viommu_domain_compatible(struct viommu_endpoint *vdev,
+				     struct viommu_domain *vdomain)
+{
+	struct iommu_domain *domain = &vdomain->domain;
+
+	if (vdomain->viommu != vdev->viommu)
+		return false;
+
+	if (domain->geometry.aperture_start < vdev->geometry.aperture_start ||
+	    domain->geometry.aperture_end > vdev->geometry.aperture_end)
+		return false;
+
+	/*
+	 * We can't attach an endpoint that has a larger granule. Other bits are
+	 * only hints.
+	 */
+	if (ffs(domain->pgsize_bitmap) < ffs(vdev->pgsize_bitmap))
+		return false;
+
+	return true;
+}
+
 static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 {
 	int i;
@@ -733,7 +796,7 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 		 * owns it.
 		 */
 		ret = viommu_domain_finalise(vdev, domain);
-	} else if (vdomain->viommu != vdev->viommu) {
+	} else if (!viommu_domain_compatible(vdev, vdomain)) {
 		ret = -EINVAL;
 	}
 	mutex_unlock(&vdomain->mutex);
@@ -982,6 +1045,8 @@ static struct iommu_device *viommu_probe_device(struct device *dev)
 
 	vdev->dev = dev;
 	vdev->viommu = viommu;
+	vdev->pgsize_bitmap = viommu->pgsize_bitmap;
+	vdev->geometry = viommu->geometry;
 	INIT_LIST_HEAD(&vdev->resv_regions);
 	dev_iommu_priv_set(dev, vdev);
 
@@ -1222,6 +1287,7 @@ static unsigned int features[] = {
 	VIRTIO_IOMMU_F_PROBE,
 	VIRTIO_IOMMU_F_MMIO,
 	VIRTIO_IOMMU_F_BYPASS_CONFIG,
+	VIRTIO_IOMMU_F_PROP_INPUT_SIZE,
 };
 
 static struct virtio_device_id id_table[] = {

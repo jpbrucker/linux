@@ -17,6 +17,7 @@
 #define VIRTIO_IOMMU_F_PROBE			4
 #define VIRTIO_IOMMU_F_MMIO			5
 #define VIRTIO_IOMMU_F_BYPASS_CONFIG		6
+#define VIRTIO_IOMMU_F_PROP_INPUT_SIZE		7
 
 struct virtio_iommu_range_64 {
 	__le64					start;
@@ -117,6 +118,8 @@ struct virtio_iommu_req_unmap {
 
 #define VIRTIO_IOMMU_PROBE_T_NONE		0
 #define VIRTIO_IOMMU_PROBE_T_RESV_MEM		1
+#define VIRTIO_IOMMU_PROBE_T_PAGE_SIZE_MASK	2
+#define VIRTIO_IOMMU_PROBE_T_INPUT_RANGE	3
 
 #define VIRTIO_IOMMU_PROBE_T_MASK		0xfff
 
@@ -132,6 +135,19 @@ struct virtio_iommu_probe_resv_mem {
 	struct virtio_iommu_probe_property	head;
 	__u8					subtype;
 	__u8					reserved[3];
+	__le64					start;
+	__le64					end;
+};
+
+struct virtio_iommu_probe_page_size_mask {
+	struct virtio_iommu_probe_property	head;
+	__u8					reserved[4];
+	__le64					mask;
+};
+
+struct virtio_iommu_probe_input_range {
+	struct virtio_iommu_probe_property	head;
+	__u8					reserved[4];
 	__le64					start;
 	__le64					end;
 };
