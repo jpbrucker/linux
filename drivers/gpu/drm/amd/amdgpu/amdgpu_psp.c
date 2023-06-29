@@ -45,9 +45,6 @@
 
 #define AMD_VBIOS_FILE_MAX_SIZE_B      (1024*1024*3)
 
-static int psp_sysfs_init(struct amdgpu_device *adev);
-static void psp_sysfs_fini(struct amdgpu_device *adev);
-
 static int psp_load_smu_fw(struct psp_context *psp);
 static int psp_rap_terminate(struct psp_context *psp);
 static int psp_securedisplay_terminate(struct psp_context *psp);
@@ -462,13 +459,6 @@ static int psp_sw_init(void *handle)
 		}
 	}
 
-	if (adev->ip_versions[MP0_HWIP][0] == IP_VERSION(11, 0, 0) ||
-	    adev->ip_versions[MP0_HWIP][0] == IP_VERSION(11, 0, 7)) {
-		ret = psp_sysfs_init(adev);
-		if (ret)
-			return ret;
-	}
-
 	ret = amdgpu_bo_create_kernel(adev, PSP_1_MEG, PSP_1_MEG,
 				      amdgpu_sriov_vf(adev) ?
 				      AMDGPU_GEM_DOMAIN_VRAM : AMDGPU_GEM_DOMAIN_GTT,
@@ -519,10 +509,6 @@ static int psp_sw_fini(void *handle)
 	amdgpu_ucode_release(&psp->ta_fw);
 	amdgpu_ucode_release(&psp->cap_fw);
 	amdgpu_ucode_release(&psp->toc_fw);
-
-	if (adev->ip_versions[MP0_HWIP][0] == IP_VERSION(11, 0, 0) ||
-	    adev->ip_versions[MP0_HWIP][0] == IP_VERSION(11, 0, 7))
-		psp_sysfs_fini(adev);
 
 	kfree(cmd);
 	cmd = NULL;
@@ -839,6 +825,7 @@ static bool psp_skip_tmr(struct psp_context *psp)
 	case IP_VERSION(11, 0, 9):
 	case IP_VERSION(11, 0, 7):
 	case IP_VERSION(13, 0, 2):
+	case IP_VERSION(13, 0, 6):
 	case IP_VERSION(13, 0, 10):
 		return true;
 	default:
@@ -2039,6 +2026,8 @@ static int psp_securedisplay_initialize(struct psp_context *psp)
 		psp_securedisplay_parse_resp_status(psp, securedisplay_cmd->status);
 		dev_err(psp->adev->dev, "SECUREDISPLAY: query securedisplay TA failed. ret 0x%x\n",
 			securedisplay_cmd->securedisplay_out_message.query_ta.query_cmd_ret);
+		/* don't try again */
+		psp->securedisplay_context.context.bin_desc.size_bytes = 0;
 	}
 
 	return 0;
@@ -3581,6 +3570,11 @@ void psp_copy_fw(struct psp_context *psp, uint8_t *start_addr, uint32_t bin_size
 	drm_dev_exit(idx);
 }
 
+/**
+ * DOC: usbc_pd_fw
+ * Reading from this file will retrieve the USB-C PD firmware version. Writing to
+ * this file will trigger the update process.
+ */
 static DEVICE_ATTR(usbc_pd_fw, 0644,
 		   psp_usbc_pd_fw_sysfs_read,
 		   psp_usbc_pd_fw_sysfs_write);
@@ -3621,7 +3615,7 @@ static ssize_t amdgpu_psp_vbflash_write(struct file *filp, struct kobject *kobj,
 	adev->psp.vbflash_image_size += count;
 	mutex_unlock(&adev->psp.mutex);
 
-	dev_info(adev->dev, "VBIOS flash write PSP done");
+	dev_dbg(adev->dev, "IFWI staged for update");
 
 	return count;
 }
@@ -3641,7 +3635,7 @@ static ssize_t amdgpu_psp_vbflash_read(struct file *filp, struct kobject *kobj,
 	if (adev->psp.vbflash_image_size == 0)
 		return -EINVAL;
 
-	dev_info(adev->dev, "VBIOS flash to PSP started");
+	dev_dbg(adev->dev, "PSP IFWI flash process initiated");
 
 	ret = amdgpu_bo_create_kernel(adev, adev->psp.vbflash_image_size,
 					AMDGPU_GPU_PAGE_SIZE,
@@ -3666,14 +3660,32 @@ rel_buf:
 	adev->psp.vbflash_image_size = 0;
 
 	if (ret) {
-		dev_err(adev->dev, "Failed to load VBIOS FW, err = %d", ret);
+		dev_err(adev->dev, "Failed to load IFWI, err = %d", ret);
 		return ret;
 	}
 
-	dev_info(adev->dev, "VBIOS flash to PSP done");
+	dev_dbg(adev->dev, "PSP IFWI flash process done");
 	return 0;
 }
 
+/**
+ * DOC: psp_vbflash
+ * Writing to this file will stage an IFWI for update. Reading from this file
+ * will trigger the update process.
+ */
+static struct bin_attribute psp_vbflash_bin_attr = {
+	.attr = {.name = "psp_vbflash", .mode = 0660},
+	.size = 0,
+	.write = amdgpu_psp_vbflash_write,
+	.read = amdgpu_psp_vbflash_read,
+};
+
+/**
+ * DOC: psp_vbflash_status
+ * The status of the flash process.
+ * 0: IFWI flash not complete.
+ * 1: IFWI flash complete.
+ */
 static ssize_t amdgpu_psp_vbflash_status(struct device *dev,
 					 struct device_attribute *attr,
 					 char *buf)
@@ -3690,43 +3702,46 @@ static ssize_t amdgpu_psp_vbflash_status(struct device *dev,
 
 	return sysfs_emit(buf, "0x%x\n", vbflash_status);
 }
-
-static const struct bin_attribute psp_vbflash_bin_attr = {
-	.attr = {.name = "psp_vbflash", .mode = 0660},
-	.size = 0,
-	.write = amdgpu_psp_vbflash_write,
-	.read = amdgpu_psp_vbflash_read,
-};
-
 static DEVICE_ATTR(psp_vbflash_status, 0440, amdgpu_psp_vbflash_status, NULL);
 
-int amdgpu_psp_sysfs_init(struct amdgpu_device *adev)
+static struct attribute *flash_attrs[] = {
+	&dev_attr_psp_vbflash_status.attr,
+	&psp_vbflash_bin_attr.attr,
+	&dev_attr_usbc_pd_fw.attr,
+	NULL
+};
+
+static umode_t amdgpu_flash_attr_is_visible(struct kobject *kobj, struct attribute *attr, int idx)
 {
-	int ret = 0;
-	struct psp_context *psp = &adev->psp;
+	struct device *dev = kobj_to_dev(kobj);
+	struct drm_device *ddev = dev_get_drvdata(dev);
+	struct amdgpu_device *adev = drm_to_adev(ddev);
 
 	if (amdgpu_sriov_vf(adev))
-		return -EINVAL;
+		return 0;
 
 	switch (adev->ip_versions[MP0_HWIP][0]) {
+	case IP_VERSION(11, 0, 0):
+	case IP_VERSION(11, 0, 7):
+		if (attr == &dev_attr_usbc_pd_fw.attr)
+			return 0660;
+		return 0;
 	case IP_VERSION(13, 0, 0):
 	case IP_VERSION(13, 0, 7):
-	case IP_VERSION(13, 0, 10):
-		if (!psp->adev) {
-			psp->adev = adev;
-			psp_v13_0_set_psp_funcs(psp);
-		}
-		ret = sysfs_create_bin_file(&adev->dev->kobj, &psp_vbflash_bin_attr);
-		if (ret)
-			dev_err(adev->dev, "Failed to create device file psp_vbflash");
-		ret = device_create_file(adev->dev, &dev_attr_psp_vbflash_status);
-		if (ret)
-			dev_err(adev->dev, "Failed to create device file psp_vbflash_status");
-		return ret;
+		if (attr == &dev_attr_usbc_pd_fw.attr)
+			return 0;
+		else if (attr == &psp_vbflash_bin_attr.attr)
+			return 0660;
+		return 0440;
 	default:
 		return 0;
 	}
 }
+
+const struct attribute_group amdgpu_flash_attr_group = {
+	.attrs = flash_attrs,
+	.is_visible = amdgpu_flash_attr_is_visible,
+};
 
 const struct amd_ip_funcs psp_ip_funcs = {
 	.name = "psp",
@@ -3745,27 +3760,6 @@ const struct amd_ip_funcs psp_ip_funcs = {
 	.set_clockgating_state = psp_set_clockgating_state,
 	.set_powergating_state = psp_set_powergating_state,
 };
-
-static int psp_sysfs_init(struct amdgpu_device *adev)
-{
-	int ret = device_create_file(adev->dev, &dev_attr_usbc_pd_fw);
-
-	if (ret)
-		DRM_ERROR("Failed to create USBC PD FW control file!");
-
-	return ret;
-}
-
-void amdgpu_psp_sysfs_fini(struct amdgpu_device *adev)
-{
-	sysfs_remove_bin_file(&adev->dev->kobj, &psp_vbflash_bin_attr);
-	device_remove_file(adev->dev, &dev_attr_psp_vbflash_status);
-}
-
-static void psp_sysfs_fini(struct amdgpu_device *adev)
-{
-	device_remove_file(adev->dev, &dev_attr_usbc_pd_fw);
-}
 
 const struct amdgpu_ip_block_version psp_v3_1_ip_block = {
 	.type = AMD_IP_BLOCK_TYPE_PSP,
