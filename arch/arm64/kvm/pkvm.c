@@ -173,6 +173,7 @@ static int __pkvm_create_hyp_vm(struct kvm *host_kvm)
 	pgd = alloc_pages_exact(pgd_sz, GFP_KERNEL_ACCOUNT);
 	if (!pgd)
 		return -ENOMEM;
+	atomic64_add(pgd_sz, &host_kvm->stat.protected_hyp_mem);
 
 	/* Donate the VM memory to hyp and let hyp initialize it. */
 	ret = refill_hyp_alloc(kvm_call_hyp_nvhe(__pkvm_init_vm,

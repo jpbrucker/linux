@@ -1403,14 +1403,16 @@ static int pkvm_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 	unsigned int flags = FOLL_HWPOISON | FOLL_LONGTERM | FOLL_WRITE;
 	struct kvm_pinned_page *ppage;
 	struct kvm *kvm = vcpu->kvm;
+	int ret, nr_pages;
 	struct page *page;
 	u64 pfn;
-	int ret;
 
+	nr_pages = hyp_memcache->nr_pages;
 	ret = topup_hyp_memcache(hyp_memcache, kvm_mmu_cache_min_pages(kvm),
 				 HYP_MEMCACHE_ACCOUNT_KMEMCG);
 	if (ret)
 		return -ENOMEM;
+	nr_pages = hyp_memcache->nr_pages - nr_pages;
 
 	ppage = kmalloc(sizeof(*ppage), GFP_KERNEL_ACCOUNT);
 	if (!ppage)
@@ -1463,7 +1465,8 @@ static int pkvm_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 	ppage->ipa = fault_ipa;
 	WARN_ON(insert_ppage(kvm, ppage));
 	write_unlock(&kvm->mmu_lock);
-
+	atomic64_add(nr_pages << PAGE_SHIFT,
+		     &kvm->stat.protected_hyp_mem);
 	return 0;
 
 unpin:
