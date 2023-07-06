@@ -236,7 +236,6 @@ void pkvm_destroy_hyp_vm(struct kvm *host_kvm)
 		goto out_free;
 
 	WARN_ON(kvm_call_hyp_nvhe(__pkvm_start_teardown_vm, host_kvm->arch.pkvm.handle));
-
 	node = rb_first(&host_kvm->arch.pkvm.pinned_pages);
 	while (node) {
 		ppage = rb_entry(node, struct kvm_pinned_page, node);
@@ -257,7 +256,7 @@ void pkvm_destroy_hyp_vm(struct kvm *host_kvm)
 
 out_free:
 	host_kvm->arch.pkvm.handle = 0;
-	free_hyp_memcache(&host_kvm->arch.pkvm.teardown_mc);
+	free_hyp_memcache(&host_kvm->arch.pkvm.teardown_mc, 0);
 }
 
 int pkvm_init_host_vm(struct kvm *host_kvm, unsigned long type)
