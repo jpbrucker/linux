@@ -19,8 +19,15 @@
 	__hyp_event_ids_start = .;				\
 	*(HYP_SECTION_NAME(.event_ids))				\
 	__hyp_event_ids_end = .;
+
+/* TODO: Hide behind NVHE_DEBUG */
+#define HYPERVISOR_PRINTK_FMTS					\
+	__hyp_printk_fmts_start = .;				\
+	*(HYP_SECTION_NAME(.printk_fmts))			\
+	__hyp_printk_fmts_end = .;
 #else
 #define HYPERVISOR_EVENT_IDS
+#define HYPERVISOR_PRINTK_FMTS
 #endif
 
 #define HYPERVISOR_DATA_SECTIONS				\
@@ -30,6 +37,7 @@
 		*(HYP_SECTION_NAME(.data..ro_after_init))	\
 		*(HYP_SECTION_NAME(.rodata))			\
 		HYPERVISOR_EVENT_IDS				\
+		HYPERVISOR_PRINTK_FMTS				\
 		. = ALIGN(PAGE_SIZE);				\
 		__hyp_rodata_end = .;				\
 	}
