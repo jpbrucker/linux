@@ -21,7 +21,7 @@
 #define HOST_FFA_ID	0
 
 int hyp_ffa_init(void *pages);
-bool kvm_host_ffa_handler(struct kvm_cpu_context *host_ctxt);
+bool kvm_host_ffa_handler(struct kvm_cpu_context *host_ctxt, u32 func_id);
 int kvm_guest_ffa_handler(struct pkvm_hyp_vcpu *hyp_vcpu, u64 *exit_code);
 
 static inline bool is_ffa_call(u64 func_id)
