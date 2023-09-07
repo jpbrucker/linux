@@ -135,6 +135,7 @@ static inline void __free_hyp_memcache(struct kvm_hyp_memcache *mc,
 }
 
 #define HYP_MEMCACHE_ACCOUNT_KMEMCG BIT(1)
+#define HYP_MEMCACHE_ACCOUNT_STAGE2 BIT(2)
 
 void free_hyp_memcache(struct kvm_hyp_memcache *mc,
 		       unsigned long flags);
@@ -209,6 +210,7 @@ typedef unsigned int pkvm_handle_t;
 struct kvm_protected_vm {
 	pkvm_handle_t handle;
 	struct kvm_hyp_memcache teardown_mc;
+	struct kvm_hyp_memcache teardown_stage2_mc;
 	struct rb_root pinned_pages;
 	gpa_t pvmfw_load_addr;
 	bool enabled;

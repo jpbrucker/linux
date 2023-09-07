@@ -192,6 +192,8 @@ static int __pkvm_create_hyp_vm(struct kvm *host_kvm)
 			goto destroy_vm;
 	}
 
+	kvm_account_pgtable_pages(pgd, pgd_sz >> PAGE_SHIFT);
+
 	return 0;
 
 destroy_vm:
@@ -247,7 +249,8 @@ void pkvm_destroy_hyp_vm(struct kvm *host_kvm)
 out_free:
 	host_kvm->arch.pkvm.handle = 0;
 	free_hyp_memcache(&host_kvm->arch.pkvm.teardown_mc, 0);
-
+	free_hyp_memcache(&host_kvm->arch.pkvm.teardown_stage2_mc,
+			  HYP_MEMCACHE_ACCOUNT_STAGE2);
 	kvm_for_each_vcpu(idx, host_vcpu, host_kvm) {
 		struct kvm_hyp_req *hyp_reqs = host_vcpu->arch.hyp_reqs;
 

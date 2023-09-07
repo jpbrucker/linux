@@ -371,7 +371,8 @@ int kvm_smccc_call_handler(struct kvm_vcpu *vcpu)
 		if (kvm_vm_is_protected(vcpu->kvm) &&
 		    !topup_hyp_memcache(&vcpu->arch.pkvm_memcache,
 					kvm_mmu_cache_min_pages(vcpu->kvm),
-					HYP_MEMCACHE_ACCOUNT_KMEMCG))
+					HYP_MEMCACHE_ACCOUNT_KMEMCG|
+					HYP_MEMCACHE_ACCOUNT_STAGE2))
 			val[0] = SMCCC_RET_SUCCESS;
 		break;
 	case ARM_SMCCC_VENDOR_HYP_KVM_MEM_RELINQUISH_FUNC_ID:
