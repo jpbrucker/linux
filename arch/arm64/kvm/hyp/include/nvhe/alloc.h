@@ -16,4 +16,5 @@ void hyp_alloc_reclaim(struct kvm_hyp_memcache *host_mc, int target);
 /* TODO: few words about the fact it is lockfree */
 size_t hyp_alloc_size(void *addr);
 u8 hyp_alloc_missing_donations(void);
+void dump_hyp_allocator(unsigned long hva);
 #endif

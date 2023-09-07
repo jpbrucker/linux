@@ -1125,6 +1125,33 @@ static void handle___pkvm_hyp_alloc_reclaim(struct kvm_cpu_context *host_ctxt)
 	cpu_reg(host_ctxt, 3) = mc.nr_pages;
 }
 
+static void handle___pkvm_hyp_alloc(struct kvm_cpu_context *host_ctxt)
+{
+	DECLARE_REG(u64, size, host_ctxt, 1);
+
+	hyp_alloc(size);
+
+	cpu_reg(host_ctxt, 1) = hyp_alloc_errno();
+}
+
+static void handle___pkvm_hyp_free(struct kvm_cpu_context *host_ctxt)
+{
+	DECLARE_REG(u64, addr, host_ctxt, 1);
+
+	hyp_free((void *)addr);
+
+	cpu_reg(host_ctxt, 1) = 0;
+}
+
+static void handle___pkvm_dump_hyp_allocator(struct kvm_cpu_context *host_ctxt)
+{
+	DECLARE_REG(u64, hva, host_ctxt, 1);
+
+	dump_hyp_allocator(hva);
+
+	cpu_reg(host_ctxt, 1) = 0;
+}
+
 typedef void (*hcall_t)(struct kvm_cpu_context *);
 
 #define HANDLE_FUNC(x)	[__KVM_HOST_SMCCC_FUNC_##x] = (hcall_t)handle_##x
@@ -1164,6 +1191,9 @@ static const hcall_t host_hcall[] = {
 	HANDLE_FUNC(__pkvm_hyp_alloc_refill),
 	HANDLE_FUNC(__pkvm_hyp_alloc_reclaimable),
 	HANDLE_FUNC(__pkvm_hyp_alloc_reclaim),
+	HANDLE_FUNC(__pkvm_hyp_alloc),
+	HANDLE_FUNC(__pkvm_hyp_free),
+	HANDLE_FUNC(__pkvm_dump_hyp_allocator),
 };
 
 static void handle_host_hcall(struct kvm_cpu_context *host_ctxt)

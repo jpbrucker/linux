@@ -839,3 +839,42 @@ u8 hyp_alloc_missing_donations(void)
 {
 	return hyp_allocator_missing_donations(&hyp_allocator);
 }
+
+struct hyp_allocator_chunk_dump {
+	unsigned long	addr;
+	unsigned long   alloc_start;
+	size_t		alloc_size;
+	size_t		unmapped_size;
+	size_t 		mapped_size;
+	u32		hash;
+};
+
+void dump_hyp_allocator(unsigned long host_va)
+{
+	struct hyp_allocator *allocator = &hyp_allocator;
+	struct hyp_allocator_chunk_dump *chunk_dump;
+	void *share = (void *)kern_hyp_va(host_va);
+	struct chunk_hdr *chunk;
+
+	WARN_ON(__pkvm_host_donate_hyp(hyp_virt_to_pfn(share), 1));
+
+	chunk_dump = (struct hyp_allocator_chunk_dump *)share;
+
+	hyp_spin_lock(&allocator->lock);
+
+	list_for_each_entry(chunk, &allocator->chunks, node) {
+		chunk_dump->addr = (unsigned long)chunk;
+		chunk_dump->alloc_start = (unsigned long)chunk_data(chunk);
+		chunk_dump->alloc_size = chunk->alloc_size;
+		chunk_dump->unmapped_size = chunk_unmapped_size(chunk, allocator);
+		chunk_dump->mapped_size = chunk->mapped_size;
+		chunk_dump->hash = chunk->hash;
+		chunk_dump++;
+	}
+
+	chunk_dump->addr = 0;
+
+	hyp_spin_unlock(&allocator->lock);
+
+	WARN_ON(__pkvm_hyp_donate_host(hyp_virt_to_pfn(share), 1));
+}

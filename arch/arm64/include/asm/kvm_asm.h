@@ -88,6 +88,9 @@ enum __kvm_host_smccc_func {
 	__KVM_HOST_SMCCC_FUNC___pkvm_hyp_alloc_refill,
 	__KVM_HOST_SMCCC_FUNC___pkvm_hyp_alloc_reclaimable,
 	__KVM_HOST_SMCCC_FUNC___pkvm_hyp_alloc_reclaim,
+	__KVM_HOST_SMCCC_FUNC___pkvm_hyp_alloc,
+	__KVM_HOST_SMCCC_FUNC___pkvm_hyp_free,
+	__KVM_HOST_SMCCC_FUNC___pkvm_dump_hyp_allocator,
 };
 
 #define DECLARE_KVM_VHE_SYM(sym)	extern char sym[]

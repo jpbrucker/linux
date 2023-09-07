@@ -504,3 +504,237 @@ unsigned long __pkvm_reclaim_hyp_alloc(unsigned long nr_pages)
 
 	return reclaimed;
 }
+
+#include <linux/debugfs.h>
+
+static ssize_t hyp_reclaim_debugfs_write(struct file *file, const char __user *buf, size_t count, loff_t *off)
+{
+	struct kvm_hyp_memcache mc;
+	struct arm_smccc_res res;
+	int target;
+
+	if (kstrtoint_from_user(buf, count, 10, &target))
+		return -EINVAL;
+
+	arm_smccc_1_1_hvc(KVM_HOST_SMCCC_FUNC(__pkvm_hyp_alloc_reclaim), target, &res);
+	WARN_ON(res.a0 != SMCCC_RET_SUCCESS);
+
+	mc.head = res.a2;
+	mc.nr_pages = res.a3;
+
+	printk("%lu page(s) reclaimed\n", mc.nr_pages);
+
+	free_hyp_memcache(&mc, 0);
+
+	return count;
+}
+
+static const struct file_operations hyp_reclaim_debugfs_fops = {
+	.write = hyp_reclaim_debugfs_write,
+};
+
+static ssize_t hyp_alloc_debugfs_write(struct file *file, const char __user *buf, size_t count, loff_t *off)
+{
+	u64 value;
+	int ret;
+
+	ret = kstrtoull_from_user(buf, count, 10, &value);
+	if (ret)
+		return ret;
+again:
+	ret = kvm_call_hyp_nvhe(__pkvm_hyp_alloc, value);
+	if (ret == -ENOMEM) {
+		struct kvm_hyp_memcache mc = {
+			.head		= 0,
+			.nr_pages	= 0,
+		};
+
+		ret = topup_hyp_memcache(&mc, 1, 0);
+		if (ret)
+			return ret;
+
+		ret = kvm_call_hyp_nvhe(__pkvm_hyp_alloc_refill, mc.head, mc.nr_pages);
+		if (ret)
+			return ret;
+		goto again;
+	} else if (ret) {
+		return ret;
+	}
+
+	return count;
+}
+
+static const struct file_operations hyp_alloc_debugfs_fops = {
+	.write = hyp_alloc_debugfs_write,
+};
+
+static ssize_t hyp_free_debugfs_write(struct file *file, const char __user *buf, size_t count, loff_t *off)
+{
+	u64 value;
+	int ret;
+
+	ret = kstrtoull_from_user(buf, count, 16, &value);
+	if (ret)
+		return ret;
+
+	ret = kvm_call_hyp_nvhe(__pkvm_hyp_free, value);
+	if (ret)
+		return ret;
+
+	return count;
+}
+
+static const struct file_operations hyp_free_debugfs_fops = {
+	.write = hyp_free_debugfs_write,
+};
+
+struct hyp_allocator_chunk_dump {
+	unsigned long	addr;
+	unsigned long	alloc_start;
+	size_t		alloc_size;
+	size_t		unmapped_size;
+	size_t 		mapped_size;
+	u32		hash;
+};
+
+#define BYTES_TO_LINES PAGE_SIZE
+#define LINE_WIDTH 33
+#if 0
+static void __dump_region(struct seq_file *m, const char *name, size_t size, unsigned long va,
+			  bool end_chunk)
+{
+	int i, j, nr_lines = size / BYTES_TO_LINES;
+
+	/* TODO: Check for non decreasing va */
+
+	if (!size)
+		return;
+
+	if (!nr_lines)
+		nr_lines = 1;
+
+	for (i = 0; i < nr_lines; i++) {
+		if (i == nr_lines / 2) {
+			int name_len = strlen(name);
+			int start = (LINE_WIDTH - 2 - name_len) / 2;
+
+			seq_putc(m, '|');
+			for (j = 0; j < start; j++)
+				seq_putc(m, ' ');
+
+			seq_puts(m, name);
+			for (j = 0; j < (name_len % 2 ? start - 1 : start); j++)
+				seq_putc(m, ' ');
+			seq_puts(m, "|\n");
+		} else
+			seq_puts(m, "|                              |\n");
+	}
+
+	if (end_chunk)
+		seq_printf(m, "+==============================+ 0x%08lx\n", va);
+	else
+		seq_printf(m, "+------------------------------+ 0x%08lx\n", va);
+}
+
+static int dump_hyp_allocator_show(struct seq_file *m, void *v)
+{
+	struct hyp_allocator_chunk_dump *first_chunk, *chunk;
+	void *page = m->private;
+
+	seq_printf(m, "Reclaimable: %ld pages\n",
+		   kvm_call_hyp_nvhe(__pkvm_hyp_alloc_reclaimable));
+
+	/* Decode the page */
+	first_chunk = chunk = (struct hyp_allocator_chunk_dump *)page;
+	if (!chunk->addr)
+		return 0;
+
+	while ((chunk + 1)->addr)
+		chunk++;
+
+	seq_printf(m, "+==============================+ 0x%08lx\n", chunk->addr + chunk->mapped_size + chunk->unmapped_size);
+	while ((unsigned long)chunk >= (unsigned long)first_chunk) {
+		size_t header_size = chunk->alloc_start - chunk->addr;
+		size_t mapped_display_size = chunk->mapped_size - header_size - chunk->alloc_size;
+
+		__dump_region(m, "unmapped", chunk->unmapped_size,
+			      chunk->addr + chunk->mapped_size, false);
+		__dump_region(m, "mapped", mapped_display_size,
+			      chunk->alloc_start + chunk->alloc_size, false);
+		__dump_region(m, "alloc", chunk->alloc_size,
+			      chunk->alloc_start, false);
+		__dump_region(m, "chunk header", header_size, chunk->addr, true);
+		chunk--;
+	}
+
+	return 0;
+}
+#else
+static int dump_hyp_allocator_show(struct seq_file *m, void *v)
+{
+	struct hyp_allocator_chunk_dump *first_chunk, *chunk;
+	void *page = m->private;
+
+	first_chunk = chunk = (struct hyp_allocator_chunk_dump *)page;
+	if (!chunk->addr)
+		return 0;
+
+	while (chunk->addr) {
+		seq_printf(m, "0x%lx: alloc=%zu mapped=%zu unmapped=%zu hash=%x\n",
+			   chunk->addr, chunk->alloc_size, chunk->mapped_size,
+			   chunk->unmapped_size, chunk->hash);
+		chunk++;
+	}
+
+	return 0;
+}
+#endif
+static int dump_hyp_allocator_open(struct inode *inode, struct file *file)
+{
+	void *page;
+	int ret;
+
+	page = page_address(alloc_page(GFP_KERNEL));
+	if (!page)
+		return -ENOMEM;
+
+	ret = kvm_call_hyp_nvhe(__pkvm_dump_hyp_allocator, page);
+	if (ret) {
+		free_page((unsigned long)page);
+		return ret;
+	}
+
+	return single_open(file, dump_hyp_allocator_show, page);
+}
+
+static int dump_hyp_allocator_release(struct inode *inode, struct file *file)
+{
+	struct seq_file *m = file->private_data;
+	void *page = m->private;
+
+	free_page((unsigned long)page);
+	seq_release(inode, file);
+
+	return 0;
+}
+
+static const struct file_operations dump_hyp_allocator_debugfs_fops = {
+	.open = dump_hyp_allocator_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = dump_hyp_allocator_release,
+};
+
+static int __init hyp_allocator_debugfs_init(void)
+{
+	debugfs_create_file("hyp_alloc", S_IWUSR, NULL, NULL, &hyp_alloc_debugfs_fops);
+
+	debugfs_create_file("hyp_free", S_IWUSR, NULL, NULL, &hyp_free_debugfs_fops);
+
+	debugfs_create_file("hyp_reclaim", S_IWUSR, NULL, NULL, &hyp_reclaim_debugfs_fops);
+
+	debugfs_create_file("dump_hyp_allocator", S_IRUSR, NULL, NULL, &dump_hyp_allocator_debugfs_fops);
+
+	return 0;
+}
+late_initcall(hyp_allocator_debugfs_init);
