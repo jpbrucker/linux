@@ -15,6 +15,8 @@
 #include <linux/of_reserved_mem.h>
 #include <linux/sort.h>
 
+#include <asm/kvm_host.h>
+#include <asm/kvm_mmu.h>
 #include <asm/kvm_pkvm.h>
 
 #include "hyp_constants.h"
@@ -112,13 +114,31 @@ void __init kvm_hyp_reserve(void)
 static int __pkvm_create_hyp_vcpu(struct kvm *host_kvm, struct kvm_vcpu *host_vcpu, unsigned long idx)
 {
 	pkvm_handle_t handle = host_kvm->arch.pkvm.handle;
+	struct kvm_hyp_req *hyp_reqs;
+	int ret;
 
 	/* Indexing of the vcpus to be sequential starting at 0. */
 	if (WARN_ON(host_vcpu->vcpu_idx != idx))
 		return -EINVAL;
 
-	return refill_hyp_alloc(kvm_call_hyp_nvhe(__pkvm_init_vcpu,
-						  handle, host_vcpu), 2);
+	hyp_reqs = (struct kvm_hyp_req *)__get_free_page(GFP_KERNEL_ACCOUNT);
+	if (!hyp_reqs)
+		return -ENOMEM;
+
+	ret = kvm_share_hyp(hyp_reqs, hyp_reqs + 1);
+	if (ret)
+		goto end;
+	host_vcpu->arch.hyp_reqs = hyp_reqs;
+
+	ret = refill_hyp_alloc(kvm_call_hyp_nvhe(__pkvm_init_vcpu,
+						 handle, host_vcpu), 2);
+end:
+	if (ret) {
+		free_page((unsigned long)hyp_reqs);
+		host_vcpu->arch.hyp_reqs = NULL;
+	}
+
+	return ret;
 }
 
 /*
@@ -197,7 +217,9 @@ void pkvm_destroy_hyp_vm(struct kvm *host_kvm)
 {
 	struct kvm_pinned_page *ppage;
 	struct mm_struct *mm = current->mm;
+	struct kvm_vcpu *host_vcpu;
 	struct rb_node *node;
+	unsigned long idx;
 
 	if (!host_kvm->arch.pkvm.handle)
 		goto out_free;
@@ -224,6 +246,16 @@ void pkvm_destroy_hyp_vm(struct kvm *host_kvm)
 out_free:
 	host_kvm->arch.pkvm.handle = 0;
 	free_hyp_memcache(&host_kvm->arch.pkvm.teardown_mc, 0);
+
+	kvm_for_each_vcpu(idx, host_vcpu, host_kvm) {
+		struct kvm_hyp_req *hyp_reqs = host_vcpu->arch.hyp_reqs;
+
+		if (!hyp_reqs)
+			continue;
+
+		kvm_unshare_hyp(hyp_reqs, hyp_reqs + 1);
+		free_page((unsigned long)hyp_reqs);
+	}
 }
 
 int pkvm_init_host_vm(struct kvm *host_kvm, unsigned long type)

@@ -472,6 +472,27 @@ struct vcpu_reset_state {
 	bool		reset;
 };
 
+struct kvm_hyp_req {
+#define KVM_HYP_REQ_MEM	1
+#define KVM_HYP_REQ_MAP	2
+#define KVM_HYP_REQ_END	((u8)(~((u8)0)))
+	u8 type;
+	union {
+		struct {
+#define REQ_MEM_HYP_ALLOC	1
+#define REQ_MEM_VCPU_MEMCACHE	2
+			u8	dest;
+			int	nr_pages;
+		} mem;
+		struct {
+			unsigned long	guest_ipa;
+			size_t		size;
+		} map;
+	};
+};
+
+#define KVM_HYP_REQ_MAX ((PAGE_SIZE / sizeof(struct kvm_hyp_req)) - 1)
+
 struct kvm_vcpu_arch {
 	struct kvm_cpu_context ctxt;
 
@@ -603,6 +624,12 @@ struct kvm_vcpu_arch {
 
 	/* Per-vcpu CCSIDR override or NULL */
 	u32 *ccsidr;
+
+	/*
+	 * Description of requests the host needs to fullfill to complete the
+	 * guest HVC
+	 */
+	struct kvm_hyp_req *hyp_reqs;
 };
 
 /*

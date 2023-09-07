@@ -33,11 +33,10 @@ void __kvm_hyp_host_forward_smc(struct kvm_cpu_context *host_ctxt);
 
 static int pkvm_refill_memcache(struct pkvm_hyp_vcpu *hyp_vcpu)
 {
-	struct pkvm_hyp_vm *hyp_vm = pkvm_hyp_vcpu_to_hyp_vm(hyp_vcpu);
-	u64 nr_pages = VTCR_EL2_LVLS(hyp_vm->kvm.arch.vtcr) - 1;
 	struct kvm_vcpu *host_vcpu = hyp_vcpu->host_vcpu;
 
-	return refill_memcache(&hyp_vcpu->vcpu.arch.pkvm_memcache, nr_pages,
+	return refill_memcache(&hyp_vcpu->vcpu.arch.pkvm_memcache,
+			       host_vcpu->arch.pkvm_memcache.nr_pages,
 			       &host_vcpu->arch.pkvm_memcache);
 }
 
@@ -503,6 +502,16 @@ static void __flush_hyp_vcpu(struct pkvm_hyp_vcpu *hyp_vcpu)
 	__copy_vcpu_state(hyp_vcpu->host_vcpu, &hyp_vcpu->vcpu);
 }
 
+static void __flush_hyp_reqs(struct pkvm_hyp_vcpu *hyp_vcpu)
+{
+	struct kvm_hyp_req *hyp_req = hyp_vcpu->vcpu.arch.hyp_reqs;
+
+	hyp_req->type = KVM_HYP_REQ_END;
+
+	/* We potentially requested to the host a memcache refill */
+	pkvm_refill_memcache(hyp_vcpu);
+}
+
 static void flush_hyp_vcpu(struct pkvm_hyp_vcpu *hyp_vcpu)
 {
 	struct kvm_vcpu *host_vcpu = hyp_vcpu->host_vcpu;
@@ -549,6 +558,9 @@ static void flush_hyp_vcpu(struct pkvm_hyp_vcpu *hyp_vcpu)
 		if (ec_handler)
 			ec_handler(hyp_vcpu);
 		break;
+	case ARM_EXCEPTION_HYP_REQ:
+		__flush_hyp_reqs(hyp_vcpu);
+		break;
 	default:
 		BUG();
 	}
@@ -571,6 +583,9 @@ static void sync_hyp_vcpu(struct pkvm_hyp_vcpu *hyp_vcpu, u32 exit_reason)
 
 	switch (ARM_EXCEPTION_CODE(exit_reason)) {
 	case ARM_EXCEPTION_IRQ:
+	case ARM_EXCEPTION_EL1_SERROR:
+	case ARM_EXCEPTION_IL:
+	case ARM_EXCEPTION_HYP_REQ:
 		break;
 	case ARM_EXCEPTION_TRAP:
 		esr_ec = ESR_ELx_EC(kvm_vcpu_get_esr(&hyp_vcpu->vcpu));
@@ -582,9 +597,6 @@ static void sync_hyp_vcpu(struct pkvm_hyp_vcpu *hyp_vcpu, u32 exit_reason)
 
 		if (ec_handler)
 			ec_handler(hyp_vcpu);
-		break;
-	case ARM_EXCEPTION_EL1_SERROR:
-	case ARM_EXCEPTION_IL:
 		break;
 	default:
 		BUG();
