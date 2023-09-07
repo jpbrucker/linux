@@ -352,4 +352,18 @@ static inline unsigned long hyp_ffa_proxy_pages(void)
 	return (2 * KVM_FFA_MBOX_NR_PAGES) + DIV_ROUND_UP(desc_max, PAGE_SIZE);
 }
 
+int __pkvm_topup_hyp_alloc(unsigned long nr_pages);
+unsigned long __pkvm_reclaim_hyp_alloc(unsigned long nr_pages);
+
+#define refill_hyp_alloc(__func, __nr_pages)			\
+({								\
+	int __ret;						\
+	do {							\
+		__ret = __func;					\
+		if (__ret != -ENOMEM)				\
+			break;					\
+		__ret = __pkvm_topup_hyp_alloc(__nr_pages);	\
+	} while (!__ret);					\
+	__ret;							\
+})
 #endif	/* __ARM64_KVM_PKVM_H__ */

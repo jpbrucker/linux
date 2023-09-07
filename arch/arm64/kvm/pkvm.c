@@ -456,3 +456,52 @@ int pkvm_vm_ioctl_enable_cap(struct kvm *kvm, struct kvm_enable_cap *cap)
 
 	return 0;
 }
+
+int __pkvm_topup_hyp_alloc(unsigned long nr_pages)
+{
+	struct kvm_hyp_memcache mc = {
+		.head		= 0,
+		.nr_pages	= 0,
+	};
+	int ret;
+
+	ret = topup_hyp_memcache(&mc, nr_pages, 0);
+	if (ret)
+		return ret;
+
+	ret = kvm_call_hyp_nvhe(__pkvm_hyp_alloc_refill, mc.head, mc.nr_pages);
+	if (ret)
+		free_hyp_memcache(&mc, 0);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(__pkvm_topup_hyp_alloc);
+
+unsigned long __pkvm_reclaim_hyp_alloc(unsigned long nr_pages)
+{
+	unsigned long ratelimit, last_reclaim, reclaimed = 0;
+	struct kvm_hyp_memcache mc;
+	struct arm_smccc_res res;
+
+	do {
+		/* Arbitrary upper bound to limit the time spent at EL2 */
+		ratelimit = min(nr_pages, 256UL);
+
+		arm_smccc_1_1_hvc(KVM_HOST_SMCCC_FUNC(__pkvm_hyp_alloc_reclaim),
+				  ratelimit, &res);
+		if (WARN_ON(res.a0 != SMCCC_RET_SUCCESS))
+			break;
+
+		mc.head = res.a2;
+		last_reclaim = mc.nr_pages = res.a3;
+		free_hyp_memcache(&mc, 0);
+
+		reclaimed += last_reclaim;
+		if (last_reclaim > nr_pages)
+			break;
+		nr_pages -= last_reclaim;
+
+	} while (last_reclaim && nr_pages);
+
+	return reclaimed;
+}

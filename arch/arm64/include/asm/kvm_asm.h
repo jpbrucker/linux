@@ -83,6 +83,9 @@ enum __kvm_host_smccc_func {
 	__KVM_HOST_SMCCC_FUNC___pkvm_vcpu_load,
 	__KVM_HOST_SMCCC_FUNC___pkvm_vcpu_put,
 	__KVM_HOST_SMCCC_FUNC___pkvm_vcpu_sync_state,
+	__KVM_HOST_SMCCC_FUNC___pkvm_hyp_alloc_refill,
+	__KVM_HOST_SMCCC_FUNC___pkvm_hyp_alloc_reclaimable,
+	__KVM_HOST_SMCCC_FUNC___pkvm_hyp_alloc_reclaim,
 };
 
 #define DECLARE_KVM_VHE_SYM(sym)	extern char sym[]
