@@ -293,6 +293,16 @@ static void *map_donated_memory_noclear(unsigned long host_va, size_t size)
 	return va;
 }
 
+static void *map_donated_memory(unsigned long host_va, size_t size)
+{
+	void *va = map_donated_memory_noclear(host_va, size);
+
+	if (va)
+		memset(va, 0, size);
+
+	return va;
+}
+
 static void __unmap_donated_memory(void *va, size_t size)
 {
 	WARN_ON(__pkvm_hyp_donate_host(hyp_virt_to_pfn(va),
@@ -314,6 +324,20 @@ static void unmap_donated_memory_noclear(void *va, size_t size)
 		return;
 
 	__unmap_donated_memory(va, size);
+}
+
+static void
+teardown_donated_memory(struct kvm_hyp_memcache *mc, void *addr, size_t size)
+{
+	void *start;
+
+	size = PAGE_ALIGN(size);
+	memset(addr, 0, size);
+
+	for (start = addr; start < addr + size; start += PAGE_SIZE)
+		push_hyp_memcache(mc, start, hyp_virt_to_phys);
+
+	unmap_donated_memory_noclear(addr, size);
 }
 
 /*
