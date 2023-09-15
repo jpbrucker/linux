@@ -28,6 +28,7 @@
 #include "trace_arm.h"
 
 #include <linux/uaccess.h>
+#include <asm/archrandom.h>
 #include <asm/ptrace.h>
 #include <asm/mman.h>
 #include <asm/tlbflush.h>
@@ -2249,6 +2250,7 @@ static void kvm_hyp_init_symbols(void)
 	kvm_nvhe_sym(kvm_arm_vmid_bits) = kvm_arm_vmid_bits;
 	kvm_nvhe_sym(kvm_sve_max_vl) = kvm_sve_max_vl;
 	kvm_nvhe_sym(kvm_host_sve_max_vl) = kvm_host_sve_max_vl;
+	kvm_nvhe_sym(smccc_trng_available) = smccc_trng_available;
 }
 
 static unsigned long kvm_hyp_shrinker_count(struct shrinker *shrinker,
