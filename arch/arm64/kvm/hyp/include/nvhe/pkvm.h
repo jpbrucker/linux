@@ -77,7 +77,7 @@ struct pkvm_hyp_vm {
 	struct pkvm_hyp_vcpu *vcpus[];
 };
 
-DECLARE_PER_CPU(struct user_fpsimd_state, loaded_host_fpsimd_state);
+extern void *host_fp_state;
 
 static inline struct pkvm_hyp_vm *
 pkvm_hyp_vcpu_to_hyp_vm(struct pkvm_hyp_vcpu *hyp_vcpu)
@@ -102,6 +102,7 @@ extern phys_addr_t pvmfw_base;
 extern phys_addr_t pvmfw_size;
 
 void pkvm_hyp_vm_table_init(void *tbl);
+void pkvm_hyp_host_fp_init(void *host_fp);
 
 struct kvm_hyp_req *
 pkvm_hyp_req_reserve(struct pkvm_hyp_vcpu *hyp_vcpu, u8 type);
