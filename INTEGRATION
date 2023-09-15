@@ -1,0 +1,27 @@
+Integration Notes
+
+Base: Linux 6.5 (2dde18cd1d8f)
+
+Branches and Base:
+for-upstream/ffa-proxy	2dde18cd1d8f
+for-upstream/pkvm-core	2dde18cd1d8f
+for-upstream/debug-pmu-core	for-upstream/pkvm-core
+for-upstream/fix-sve	for-upstream/pkvm-core
+for-upstream/sve-guest	for-upstream/fix-sve
+for-upstream/pkvm-sme	for-upstream/pkvm-core
+for-upstream/trng-relay	for-upstream/pkvm-core
+for-upstream/pkvm-pvmfw-loader	for-upstream/pkvm-core
+for-upstream/pkvm-coalescing	for-upstream/pkvm-core
+for-upstream/mmioguard	for-upstream/pkvm-pvmfw-loader
+for-upstream/mmioguard-guest	2dde18cd1d8f
+for-upstream/memory-reclaim	for-upstream/mmioguard
+for-upstream/memory-reclaim-guest	for-upstream/mmioguard-guest
+for-upstream/pkvm-psci-mem-protect	for-upstream/memory-reclaim
+for-upstream/fast-teardown	for-upstream/pkvm-psci-mem-protect
+for-upstream/pkvm-allocator	for-upstream/fast-teardown
+for-upstream/pkvm-tracing	for-upstream/pkvm-allocator
+for-upstream/pkvm-accounting	for-upstream/pkvm-allocator
+for-upstream/guest-ffa-proxy	for-upstream/pkvm-allocator
+
+To access, prefix with:
+https://android-kvm.googlesource.com/linux/+/refs/heads/
