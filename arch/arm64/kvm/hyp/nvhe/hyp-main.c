@@ -832,6 +832,16 @@ static void handle___kvm_vcpu_run(struct kvm_cpu_context *host_ctxt)
 		goto out;
 	}
 
+	/*
+	 * KVM (and pKVM) doesn't support SME guests, and ensures that SME
+	 * features aren't enabled in pstate when loading a vcpu. Therefore,
+	 * if SME features enabled it's either a bug or a malicious host.
+	 */
+	if (unlikely(system_supports_sme() && read_sysreg_s(SYS_SVCR))) {
+		ret = -EINVAL;
+		goto out;
+	}
+
 	if (unlikely(hyp_vcpu)) {
 		flush_hyp_vcpu(hyp_vcpu);
 
@@ -1325,6 +1335,7 @@ void handle_trap(struct kvm_cpu_context *host_ctxt)
 		break;
 	case ESR_ELx_EC_FP_ASIMD:
 	case ESR_ELx_EC_SVE:
+	case ESR_ELx_EC_SME:
 		fpsimd_host_restore();
 		break;
 	case ESR_ELx_EC_IABT_LOW:
