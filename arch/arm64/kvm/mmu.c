@@ -1015,18 +1015,29 @@ void kvm_free_stage2_pgd(struct kvm_s2_mmu *mmu)
 
 static void hyp_mc_free_fn(void *addr, void *flags)
 {
+	bool account_stage2 = (unsigned long)flags;
+
 	free_page((unsigned long)addr);
+
+	if (account_stage2)
+		kvm_account_pgtable_pages(addr, -1);
 }
 
 static void *hyp_mc_alloc_fn(void *flags)
 {
 	unsigned long __flags = (unsigned long)flags;
 	gfp_t gfp_mask;
+	void *addr;
 
 	gfp_mask = __flags & HYP_MEMCACHE_ACCOUNT_KMEMCG ?
 		   GFP_KERNEL_ACCOUNT : GFP_KERNEL;
 
-	return (void *)__get_free_page(gfp_mask);
+	addr = (void *)__get_free_page(gfp_mask);
+
+	if (addr && __flags & HYP_MEMCACHE_ACCOUNT_STAGE2)
+		kvm_account_pgtable_pages(addr, 1);
+
+	return addr;
 }
 
 void free_hyp_memcache(struct kvm_hyp_memcache *mc, unsigned long flags)
@@ -1425,14 +1436,17 @@ static int pkvm_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 	unsigned int flags = FOLL_HWPOISON | FOLL_LONGTERM | FOLL_WRITE;
 	struct kvm_pinned_page *ppage;
 	struct kvm *kvm = vcpu->kvm;
+	int ret, nr_pages;
 	struct page *page;
 	u64 pfn;
-	int ret;
 
+	nr_pages = hyp_memcache->nr_pages;
 	ret = topup_hyp_memcache(hyp_memcache, kvm_mmu_cache_min_pages(kvm),
-				 HYP_MEMCACHE_ACCOUNT_KMEMCG);
+				 HYP_MEMCACHE_ACCOUNT_KMEMCG |
+				 HYP_MEMCACHE_ACCOUNT_STAGE2);
 	if (ret)
 		return -ENOMEM;
+	nr_pages = hyp_memcache->nr_pages - nr_pages;
 
 	ppage = kmalloc(sizeof(*ppage), GFP_KERNEL_ACCOUNT);
 	if (!ppage)
@@ -1485,7 +1499,8 @@ static int pkvm_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 	ppage->ipa = fault_ipa;
 	WARN_ON(insert_ppage(kvm, ppage));
 	write_unlock(&kvm->mmu_lock);
-
+	atomic64_add(nr_pages << PAGE_SHIFT,
+		     &kvm->stat.protected_hyp_mem);
 	return 0;
 
 unpin:

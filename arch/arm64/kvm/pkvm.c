@@ -181,6 +181,7 @@ static int __pkvm_create_hyp_vm(struct kvm *host_kvm)
 	pgd = alloc_pages_exact(pgd_sz, GFP_KERNEL_ACCOUNT);
 	if (!pgd)
 		return -ENOMEM;
+	atomic64_add(pgd_sz, &host_kvm->stat.protected_hyp_mem);
 
 	/* Donate the VM memory to hyp and let hyp initialize it. */
 	ret = refill_hyp_alloc(kvm_call_hyp_nvhe(__pkvm_init_vm,
@@ -199,6 +200,8 @@ static int __pkvm_create_hyp_vm(struct kvm *host_kvm)
 			goto destroy_vm;
 		__pkvm_vcpu_hyp_created(host_vcpu);
 	}
+
+	kvm_account_pgtable_pages(pgd, pgd_sz >> PAGE_SHIFT);
 
 	return 0;
 
@@ -255,7 +258,8 @@ void pkvm_destroy_hyp_vm(struct kvm *host_kvm)
 out_free:
 	host_kvm->arch.pkvm.handle = 0;
 	free_hyp_memcache(&host_kvm->arch.pkvm.teardown_mc, 0);
-
+	free_hyp_memcache(&host_kvm->arch.pkvm.teardown_stage2_mc,
+			  HYP_MEMCACHE_ACCOUNT_STAGE2);
 	kvm_for_each_vcpu(idx, host_vcpu, host_kvm) {
 		struct kvm_hyp_req *hyp_reqs = host_vcpu->arch.hyp_reqs;
 

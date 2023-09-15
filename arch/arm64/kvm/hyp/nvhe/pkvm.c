@@ -417,7 +417,7 @@ int __pkvm_reclaim_dying_guest_page(pkvm_handle_t handle, u64 pfn, u64 ipa)
 	if (ret)
 		goto unlock;
 
-	drain_hyp_pool(hyp_vm, &hyp_vm->host_kvm->arch.pkvm.teardown_mc);
+	drain_hyp_pool(hyp_vm, &hyp_vm->host_kvm->arch.pkvm.teardown_stage2_mc);
 unlock:
 	hyp_read_unlock(&vm_table_lock);
 
@@ -821,6 +821,11 @@ static size_t pkvm_get_hyp_vm_size(unsigned int nr_vcpus)
 		size_mul(sizeof(struct pkvm_hyp_vcpu *), nr_vcpus));
 }
 
+static inline void account_hyp_alloc(void *alloc, struct kvm *host_kvm)
+{
+	atomic64_add(hyp_alloc_size(alloc), &host_kvm->stat.protected_hyp_mem);
+}
+
 /*
  * Initialize the hypervisor copy of the protected VM state using the
  * memory donated by the host.
@@ -858,12 +863,14 @@ int __pkvm_init_vm(struct kvm *host_kvm, unsigned long pgd_hva)
 		ret = hyp_alloc_errno();
 		goto err_unpin_kvm;
 	}
+	account_hyp_alloc((void *)hyp_vm, host_kvm);
 
 	last_ran = hyp_alloc(pkvm_get_last_ran_size());
 	if (!last_ran) {
 		ret = hyp_alloc_errno();
 		goto err_free_vm;
 	}
+	account_hyp_alloc((void *)last_ran, host_kvm);
 
 	ret = -EINVAL;
 	pgd_size = kvm_pgtable_stage2_pgd_size(host_mmu.arch.vtcr);
@@ -926,6 +933,8 @@ int __pkvm_init_vcpu(pkvm_handle_t handle, struct kvm_vcpu *host_vcpu)
 		ret = -ENOENT;
 		goto unlock_vm;
 	}
+
+	account_hyp_alloc((void *)hyp_vcpu, hyp_vm->host_kvm);
 
 	hyp_spin_lock(&hyp_vm->vcpus_lock);
 	idx = hyp_vm->nr_vcpus;
@@ -1009,7 +1018,7 @@ int __pkvm_finalize_teardown_vm(pkvm_handle_t handle)
 	 * worrying about anybody else.
 	 */
 
-	mc = &host_kvm->arch.pkvm.teardown_mc;
+	mc = &host_kvm->arch.pkvm.teardown_stage2_mc;
 	destroy_hyp_vm_pgt(hyp_vm);
 	drain_hyp_pool(hyp_vm, mc);
 	unpin_host_vcpus(hyp_vm->vcpus, hyp_vm->nr_vcpus);
