@@ -44,6 +44,38 @@ typedef u64 kvm_pte_t;
 
 #define KVM_PHYS_INVALID		(-1ULL)
 
+#define KVM_PTE_TYPE			BIT(1)
+#define KVM_PTE_TYPE_BLOCK		0
+#define KVM_PTE_TYPE_PAGE		1
+#define KVM_PTE_TYPE_TABLE		1
+
+#define KVM_PTE_LEAF_ATTR_LO		GENMASK(11, 2)
+
+#define KVM_PTE_LEAF_ATTR_LO_S1_ATTRIDX	GENMASK(4, 2)
+#define KVM_PTE_LEAF_ATTR_LO_S1_AP	GENMASK(7, 6)
+#define KVM_PTE_LEAF_ATTR_LO_S1_AP_RO	3
+#define KVM_PTE_LEAF_ATTR_LO_S1_AP_RW	1
+#define KVM_PTE_LEAF_ATTR_LO_S1_SH	GENMASK(9, 8)
+#define KVM_PTE_LEAF_ATTR_LO_S1_SH_IS	3
+#define KVM_PTE_LEAF_ATTR_LO_S1_AF	BIT(10)
+
+#define KVM_PTE_LEAF_ATTR_LO_S2_MEMATTR	GENMASK(5, 2)
+#define KVM_PTE_LEAF_ATTR_LO_S2_S2AP_R	BIT(6)
+#define KVM_PTE_LEAF_ATTR_LO_S2_S2AP_W	BIT(7)
+#define KVM_PTE_LEAF_ATTR_LO_S2_SH	GENMASK(9, 8)
+#define KVM_PTE_LEAF_ATTR_LO_S2_SH_IS	3
+#define KVM_PTE_LEAF_ATTR_LO_S2_AF	BIT(10)
+
+#define KVM_PTE_LEAF_ATTR_HI		GENMASK(63, 50)
+
+#define KVM_PTE_LEAF_ATTR_HI_SW		GENMASK(58, 55)
+
+#define KVM_PTE_LEAF_ATTR_HI_S1_XN	BIT(54)
+
+#define KVM_PTE_LEAF_ATTR_HI_S2_XN	BIT(54)
+
+#define KVM_PTE_LEAF_ATTR_HI_S1_GP	BIT(50)
+
 static inline bool kvm_pte_valid(kvm_pte_t pte)
 {
 	return pte & KVM_PTE_VALID;
@@ -108,6 +140,17 @@ static inline bool kvm_is_block_size_supported(u64 size)
 	bool is_power_of_two = IS_ALIGNED(size, size);
 
 	return is_power_of_two && (size & kvm_supported_block_sizes());
+}
+
+static inline bool kvm_pte_table(kvm_pte_t pte, u32 level)
+{
+	if (level == KVM_PGTABLE_MAX_LEVELS - 1)
+		return false;
+
+	if (!kvm_pte_valid(pte))
+		return false;
+
+	return FIELD_GET(KVM_PTE_TYPE, pte) == KVM_PTE_TYPE_TABLE;
 }
 
 /**
@@ -187,11 +230,32 @@ enum kvm_pgtable_prot {
 	KVM_PGTABLE_PROT_SW3			= BIT(58),
 };
 
+/*
+ * Used to indicate a pte for which a 'break-before-make' sequence is in
+ * progress.
+ */
+#define KVM_INVALID_PTE_LOCKED		BIT(10)
+
 #define KVM_PGTABLE_PROT_RW	(KVM_PGTABLE_PROT_R | KVM_PGTABLE_PROT_W)
 #define KVM_PGTABLE_PROT_RWX	(KVM_PGTABLE_PROT_RW | KVM_PGTABLE_PROT_X)
 
 #define PKVM_HOST_MEM_PROT	KVM_PGTABLE_PROT_RWX
 #define PKVM_HOST_MMIO_PROT	KVM_PGTABLE_PROT_RW
+
+#define KVM_HOST_S2_DEFAULT_MASK   ((KVM_PTE_LEAF_ATTR_HI |	\
+				    KVM_PTE_LEAF_ATTR_LO) &	\
+				    ~(KVM_INVALID_PTE_LOCKED))
+
+#define KVM_HOST_S2_DEFAULT_MEM_PTE		\
+	(PTE_S2_MEMATTR(MT_S2_NORMAL) |		\
+	KVM_PTE_LEAF_ATTR_LO_S2_S2AP_R |	\
+	KVM_PTE_LEAF_ATTR_LO_S2_S2AP_W |	\
+	KVM_PTE_LEAF_ATTR_LO_S2_AF |		\
+	FIELD_PREP(KVM_PTE_LEAF_ATTR_LO_S2_SH, KVM_PTE_LEAF_ATTR_LO_S2_SH_IS))
+
+#define KVM_HOST_S2_DEFAULT_MMIO_PTE		\
+	(KVM_HOST_S2_DEFAULT_MEM_PTE |		\
+	KVM_PTE_LEAF_ATTR_HI_S2_XN)
 
 #define PAGE_HYP		KVM_PGTABLE_PROT_RW
 #define PAGE_HYP_EXEC		(KVM_PGTABLE_PROT_R | KVM_PGTABLE_PROT_X)
@@ -200,6 +264,22 @@ enum kvm_pgtable_prot {
 
 typedef bool (*kvm_pgtable_force_pte_cb_t)(u64 addr, u64 end,
 					   enum kvm_pgtable_prot prot);
+
+typedef bool (*kvm_pgtable_pte_is_counted_cb_t)(kvm_pte_t pte, u32 level);
+
+/**
+ * struct kvm_pgtable_pte_ops - PTE callbacks.
+ * @force_pte_cb:		Force the mapping granularity to pages and
+ *				return true if we support this instead of
+ *				block mappings.
+ * @pte_is_counted_cb		Verify the attributes of the @pte argument
+ *				and return true if the descriptor needs to be
+ *				refcounted, otherwise return false.
+ */
+struct kvm_pgtable_pte_ops {
+	kvm_pgtable_force_pte_cb_t		force_pte_cb;
+	kvm_pgtable_pte_is_counted_cb_t		pte_is_counted_cb;
+};
 
 /**
  * enum kvm_pgtable_walk_flags - Flags to control a depth-first page-table walk.
@@ -236,6 +316,7 @@ struct kvm_pgtable_visit_ctx {
 	void					*arg;
 	struct kvm_pgtable_mm_ops		*mm_ops;
 	u64					start;
+	struct kvm_pgtable_pte_ops		*pte_ops;
 	u64					addr;
 	u64					end;
 	u32					level;
@@ -336,8 +417,7 @@ static inline bool kvm_pgtable_walk_lock_held(void)
  * @mm_ops:		Memory management callbacks.
  * @mmu:		Stage-2 KVM MMU struct. Unused for stage-1 page-tables.
  * @flags:		Stage-2 page-table flags.
- * @force_pte_cb:	Function that returns true if page level mappings must
- *			be used instead of block mappings.
+ * @pte_ops:		PTE callbacks.
  */
 struct kvm_pgtable {
 	u32					ia_bits;
@@ -348,7 +428,7 @@ struct kvm_pgtable {
 	/* Stage-2 only */
 	struct kvm_s2_mmu			*mmu;
 	enum kvm_pgtable_stage2_flags		flags;
-	kvm_pgtable_force_pte_cb_t		force_pte_cb;
+	struct kvm_pgtable_pte_ops		*pte_ops;
 };
 
 /**
@@ -444,18 +524,17 @@ size_t kvm_pgtable_stage2_pgd_size(u64 vtcr);
  * @mmu:	S2 MMU context for this S2 translation
  * @mm_ops:	Memory management callbacks.
  * @flags:	Stage-2 configuration flags.
- * @force_pte_cb: Function that returns true if page level mappings must
- *		be used instead of block mappings.
+ * @pte_ops:	PTE callbacks.
  *
  * Return: 0 on success, negative error code on failure.
  */
 int __kvm_pgtable_stage2_init(struct kvm_pgtable *pgt, struct kvm_s2_mmu *mmu,
 			      struct kvm_pgtable_mm_ops *mm_ops,
 			      enum kvm_pgtable_stage2_flags flags,
-			      kvm_pgtable_force_pte_cb_t force_pte_cb);
+			      struct kvm_pgtable_pte_ops *pte_ops);
 
-#define kvm_pgtable_stage2_init(pgt, mmu, mm_ops) \
-	__kvm_pgtable_stage2_init(pgt, mmu, mm_ops, 0, NULL)
+#define kvm_pgtable_stage2_init(pgt, mmu, mm_ops, pte_ops) \
+	__kvm_pgtable_stage2_init(pgt, mmu, mm_ops, 0, pte_ops)
 
 /**
  * kvm_pgtable_stage2_destroy() - Destroy an unused guest stage-2 page-table.
@@ -469,13 +548,16 @@ void kvm_pgtable_stage2_destroy(struct kvm_pgtable *pgt);
 /**
  * kvm_pgtable_stage2_free_unlinked() - Free an unlinked stage-2 paging structure.
  * @mm_ops:	Memory management callbacks.
+ * @pte_ops:	Pagetable entries management callbacks.
  * @pgtable:	Unlinked stage-2 paging structure to be freed.
  * @level:	Level of the stage-2 paging structure to be freed.
  *
  * The page-table is assumed to be unreachable by any hardware walkers prior to
  * freeing and therefore no TLB invalidation is performed.
  */
-void kvm_pgtable_stage2_free_unlinked(struct kvm_pgtable_mm_ops *mm_ops, void *pgtable, u32 level);
+void kvm_pgtable_stage2_free_unlinked(struct kvm_pgtable_mm_ops *mm_ops,
+				      struct kvm_pgtable_pte_ops *pte_ops,
+				      void *pgtable, u32 level);
 
 /**
  * kvm_pgtable_stage2_create_unlinked() - Create an unlinked stage-2 paging structure.
