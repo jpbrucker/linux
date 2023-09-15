@@ -75,6 +75,10 @@ int __pkvm_host_share_guest(u64 pfn, u64 gfn, struct pkvm_hyp_vcpu *vcpu);
 int __pkvm_host_donate_guest(u64 pfn, u64 gfn, struct pkvm_hyp_vcpu *vcpu);
 int __pkvm_guest_share_host(struct pkvm_hyp_vcpu *hyp_vcpu, u64 ipa);
 int __pkvm_guest_unshare_host(struct pkvm_hyp_vcpu *hyp_vcpu, u64 ipa);
+int __pkvm_guest_share_hyp(struct pkvm_hyp_vcpu *vcpu, u64 ipa);
+int __pkvm_guest_unshare_hyp(struct pkvm_hyp_vcpu *vcpu, u64 ipa);
+int __pkvm_guest_share_ffa(struct pkvm_hyp_vcpu *vcpu, u64 ipa);
+int __pkvm_guest_unshare_ffa(struct pkvm_hyp_vcpu *vcpu, u64 ipa);
 int __pkvm_install_ioguard_page(struct pkvm_hyp_vcpu *hyp_vcpu, u64 ipa);
 int __pkvm_remove_ioguard_page(struct pkvm_hyp_vcpu *hyp_vcpu, u64 ipa);
 bool __pkvm_check_ioguard_page(struct pkvm_hyp_vcpu *hyp_vcpu);
@@ -89,6 +93,11 @@ int kvm_guest_prepare_stage2(struct pkvm_hyp_vm *vm, void *pgd);
 void handle_host_mem_abort(struct kvm_cpu_context *host_ctxt);
 
 int hyp_pin_shared_mem(void *from, void *to);
+int hyp_pin_shared_mem_from_guest(struct pkvm_hyp_vcpu *vcpu, void *guest_ipa_from,
+				  void *hyp_va_from, void *hyp_va_to);
+void hyp_unpin_shared_mem_from_guest(struct pkvm_hyp_vcpu *vcpu,
+				     void *hyp_va_from,
+				     void *hyp_va_to);
 void hyp_unpin_shared_mem(void *from, void *to);
 int refill_memcache(struct kvm_hyp_memcache *mc, unsigned long min_pages,
 		    struct kvm_hyp_memcache *host_mc);

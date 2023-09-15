@@ -7,12 +7,15 @@
 #include <linux/kvm_host.h>
 #include <linux/mm.h>
 
+#include <hyp/adjust_pc.h>
+
 #include <kvm/arm_hypercalls.h>
 #include <kvm/arm_psci.h>
 
 #include <asm/kvm_emulate.h>
 
 #include <nvhe/alloc.h>
+#include <nvhe/ffa.h>
 #include <nvhe/mem_protect.h>
 #include <nvhe/memory.h>
 #include <nvhe/mm.h>
@@ -35,6 +38,8 @@ unsigned int kvm_host_sve_max_vl;
  * protected KVM is enabled, but for both protected and non-protected VMs.
  */
 static DEFINE_PER_CPU(struct pkvm_hyp_vcpu *, loaded_hyp_vcpu);
+
+void __kvm_hyp_host_forward_smc(struct kvm_cpu_context *guest_ctxt);
 
 /*
  * Host fp state for all cpus. This could include the host simd state, as well
@@ -974,13 +979,10 @@ int __pkvm_start_teardown_vm(pkvm_handle_t handle)
 	} else if (WARN_ON(hyp_refcount_get(hyp_vm->refcount))) {
 		ret = -EBUSY;
 		goto unlock;
-	} else if (hyp_vm->is_dying) {
-		ret = -EINVAL;
-		goto unlock;
 	}
 
 	hyp_vm->is_dying = true;
-
+	ret = guest_ffa_reclaim_memory(hyp_vm);
 unlock:
 	hyp_read_unlock(&vm_table_lock);
 
@@ -1428,30 +1430,6 @@ static bool pkvm_handle_psci(struct pkvm_hyp_vcpu *hyp_vcpu)
 	return pvm_psci_not_supported(hyp_vcpu);
 }
 
-static u64 __pkvm_memshare_page_req(struct pkvm_hyp_vcpu *hyp_vcpu, u64 ipa)
-{
-	struct kvm_vcpu *vcpu = &hyp_vcpu->vcpu;
-	u64 elr;
-
-	/* Fake up a data abort (Level 3 translation fault on write) */
-	vcpu->arch.fault.esr_el2 = (u32)ESR_ELx_EC_DABT_LOW << ESR_ELx_EC_SHIFT |
-				   ESR_ELx_WNR | ESR_ELx_FSC_FAULT |
-				   FIELD_PREP(ESR_ELx_FSC_LEVEL, 3);
-
-	/* Shuffle the IPA around into the HPFAR */
-	vcpu->arch.fault.hpfar_el2 = (ipa >> 8) & HPFAR_MASK;
-
-	/* This is a virtual address. 0's good. Let's go with 0. */
-	vcpu->arch.fault.far_el2 = 0;
-
-	/* Rewind the ELR so we return to the HVC once the IPA is mapped */
-	elr = read_sysreg(elr_el2);
-	elr -= 4;
-	write_sysreg(elr, elr_el2);
-
-	return ARM_EXCEPTION_TRAP;
-}
-
 static bool pkvm_memshare_call(struct pkvm_hyp_vcpu *hyp_vcpu, u64 *exit_code)
 {
 	struct kvm_vcpu *vcpu = &hyp_vcpu->vcpu;
@@ -1607,6 +1585,79 @@ static bool pkvm_forward_trng(struct kvm_vcpu *vcpu)
 	}
 
 	return true;
+}
+
+u64 __pkvm_memshare_page_req(struct pkvm_hyp_vcpu *hyp_vcpu, u64 ipa)
+{
+	struct kvm_vcpu *vcpu = &hyp_vcpu->vcpu;
+	u64 elr;
+
+	/* Fake up a data abort (Level 3 translation fault on write) */
+	vcpu->arch.fault.esr_el2 = (u32)ESR_ELx_EC_DABT_LOW << ESR_ELx_EC_SHIFT |
+				   ESR_ELx_WNR | ESR_ELx_FSC_FAULT |
+				   FIELD_PREP(ESR_ELx_FSC_LEVEL, 3);
+
+	/* Shuffle the IPA around into the HPFAR */
+	vcpu->arch.fault.hpfar_el2 = (ipa >> 8) & HPFAR_MASK;
+
+	/* This is a virtual address. 0's good. Let's go with 0. */
+	vcpu->arch.fault.far_el2 = 0;
+
+	/* Rewind the ELR so we return to the HVC once the IPA is mapped */
+	elr = read_sysreg(elr_el2);
+	elr -= 4;
+	write_sysreg(elr, elr_el2);
+
+	return ARM_EXCEPTION_TRAP;
+}
+
+bool kvm_guest_filter_smc64(struct kvm_vcpu *vcpu)
+{
+	struct kvm_cpu_context *ctxt = &vcpu->arch.ctxt;
+	struct kvm_s2_mmu *mmu = vcpu->arch.hw_mmu;
+	struct kvm_vmid *kvm_vmid = &mmu->vmid;
+	u64 vmid = atomic64_read(&kvm_vmid->id);
+	u64 old_client_id, new_client_id;
+
+	// Set w7[15:0] in the SMC to the vmid since TF-A forwards that to TZ
+	old_client_id = vcpu_get_reg(vcpu, 7);
+	new_client_id = (old_client_id & ~0xffffULL) | (vmid & 0xffffULL);
+	vcpu_set_reg(vcpu, 7, new_client_id);
+
+	// TODO: additional filtering on the SMC calls allowed by the guest
+	__kvm_hyp_host_forward_smc(ctxt);
+
+	// Restore r7 if we changed it. See hyp-main.c for the rationale.
+	if (vcpu_get_reg(vcpu, 7) == new_client_id) {
+		vcpu_set_reg(vcpu, 7, old_client_id);
+	}
+	return true;
+}
+
+bool kvm_handle_pvm_smc64(struct kvm_vcpu *vcpu, u64 *exit_code)
+{
+	u32 fn = smccc_get_function(vcpu);
+	struct pkvm_hyp_vcpu *hyp_vcpu;
+	bool handled = true;
+	int ret = 1;
+
+	hyp_vcpu = container_of(vcpu, struct pkvm_hyp_vcpu, vcpu);
+	if (is_ffa_call(fn))
+		ret = kvm_guest_ffa_handler(hyp_vcpu, exit_code);
+
+	if (ret == -EFAULT) {
+		handled = false;
+	} else if (ret == -ENOMEM) {
+		/* No memory from the hyp_allocator, return to the host to
+		 * process the request.
+		 */
+		return false;
+	} else if (ret > 0 && !is_ffa_error(vcpu)) {
+		handled = kvm_guest_filter_smc64(vcpu);
+	}
+
+	__kvm_skip_instr(vcpu);
+	return handled;
 }
 
 /*

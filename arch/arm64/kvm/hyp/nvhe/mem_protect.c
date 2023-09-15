@@ -18,6 +18,7 @@
 #include <nvhe/memory.h>
 #include <nvhe/mem_protect.h>
 #include <nvhe/mm.h>
+#include <nvhe/ffa.h>
 
 #define KVM_HOST_S2_FLAGS (KVM_PGTABLE_S2_NOFWB | KVM_PGTABLE_S2_IDMAP)
 
@@ -1128,6 +1129,9 @@ static int __guest_get_completer_addr(u64 *completer_addr, phys_addr_t phys,
 	case PKVM_ID_HYP:
 		*completer_addr = (u64)__hyp_va(phys);
 		break;
+	case PKVM_ID_FFA:
+		/* We don't handle secure page tables */
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -1595,6 +1599,70 @@ int __pkvm_guest_share_host(struct pkvm_hyp_vcpu *vcpu, u64 ipa)
 	return ret;
 }
 
+int __pkvm_guest_share_hyp(struct pkvm_hyp_vcpu *vcpu, u64 ipa)
+{
+	int ret;
+	struct pkvm_hyp_vm *vm = pkvm_hyp_vcpu_to_hyp_vm(vcpu);
+	struct pkvm_mem_share share = {
+		.tx	= {
+			.nr_pages	= 1,
+			.initiator	= {
+				.id	= PKVM_ID_GUEST,
+				.addr	= ipa,
+				.guest	= {
+					.hyp_vcpu = vcpu,
+				},
+			},
+			.completer	= {
+				.id	= PKVM_ID_HYP,
+			},
+		},
+		.completer_prot	= PAGE_HYP,
+	};
+
+	guest_lock_component(vm);
+	hyp_lock_component();
+
+	ret = do_share(&share);
+
+	hyp_unlock_component();
+	guest_unlock_component(vm);
+
+	return ret;
+}
+
+int __pkvm_guest_unshare_hyp(struct pkvm_hyp_vcpu *vcpu, u64 ipa)
+{
+	int ret;
+	struct pkvm_hyp_vm *vm = pkvm_hyp_vcpu_to_hyp_vm(vcpu);
+	struct pkvm_mem_share share = {
+		.tx	= {
+			.nr_pages	= 1,
+			.initiator	= {
+				.id	= PKVM_ID_GUEST,
+				.addr	= ipa,
+				.guest	= {
+					.hyp_vcpu = vcpu,
+				},
+			},
+			.completer	= {
+				.id	= PKVM_ID_HYP,
+			},
+		},
+		.completer_prot	= PAGE_HYP,
+	};
+
+	guest_lock_component(vm);
+	hyp_lock_component();
+
+	ret = do_unshare(&share);
+
+	hyp_unlock_component();
+	guest_unlock_component(vm);
+
+	return ret;
+}
+
 int __pkvm_guest_unshare_host(struct pkvm_hyp_vcpu *vcpu, u64 ipa)
 {
 	int ret;
@@ -1722,6 +1790,58 @@ int __pkvm_hyp_donate_host(u64 pfn, u64 nr_pages)
 	host_unlock_component();
 
 	return ret;
+}
+
+int hyp_pin_shared_mem_from_guest(struct pkvm_hyp_vcpu *vcpu, void *guest_ipa_from,
+				  void *hyp_va_from, void *hyp_va_to)
+{
+	int ret;
+	u64 cur, start = ALIGN_DOWN((u64)hyp_va_from, PAGE_SIZE);
+	u64 end = PAGE_ALIGN((u64)hyp_va_to);
+	u64 guest_ipa_from_aligned = ALIGN_DOWN((u64)guest_ipa_from, PAGE_SIZE);
+	u64 size = end - start;
+	struct pkvm_hyp_vm *vm = pkvm_hyp_vcpu_to_hyp_vm(vcpu);
+
+	guest_lock_component(vm);
+	hyp_lock_component();
+
+	ret = __guest_check_page_state_range(vcpu, guest_ipa_from_aligned, size,
+					     PKVM_PAGE_SHARED_OWNED);
+
+	if (ret)
+		goto unlock;
+
+	ret = __hyp_check_page_state_range(start, size,
+					   PKVM_PAGE_SHARED_BORROWED);
+	if (ret)
+		goto unlock;
+
+	for (cur = start; cur < end; cur += PAGE_SIZE)
+		hyp_page_ref_inc(hyp_virt_to_page(cur));
+
+unlock:
+	hyp_unlock_component();
+	guest_unlock_component(vm);
+
+	return ret;
+}
+
+void hyp_unpin_shared_mem_from_guest(struct pkvm_hyp_vcpu *vcpu,
+				     void *hyp_va_from,
+				     void *hyp_va_to)
+{
+	struct pkvm_hyp_vm *vm = pkvm_hyp_vcpu_to_hyp_vm(vcpu);
+	u64 cur, start = ALIGN_DOWN((u64)hyp_va_from, PAGE_SIZE);
+	u64 end = PAGE_ALIGN((u64)hyp_va_to);
+
+	guest_lock_component(vm);
+	hyp_lock_component();
+
+	for (cur = start; cur < end; cur += PAGE_SIZE)
+		hyp_page_ref_dec(hyp_virt_to_page(cur));
+
+	hyp_unlock_component();
+	guest_unlock_component(vm);
 }
 
 int hyp_pin_shared_mem(void *from, void *to)
@@ -1890,6 +2010,60 @@ int __pkvm_host_donate_guest(u64 pfn, u64 gfn, struct pkvm_hyp_vcpu *vcpu)
 	return ret;
 }
 
+int __pkvm_guest_share_ffa(struct pkvm_hyp_vcpu *vcpu, u64 ipa)
+{
+	int ret;
+	struct pkvm_hyp_vm *vm = pkvm_hyp_vcpu_to_hyp_vm(vcpu);
+	struct pkvm_mem_share share = {
+		.tx	= {
+			.nr_pages	= 1,
+			.initiator	= {
+				.id	= PKVM_ID_GUEST,
+				.addr	= ipa,
+				.guest  = {
+					.hyp_vcpu = vcpu,
+				},
+			},
+			.completer	= {
+				.id	= PKVM_ID_FFA,
+			},
+		},
+	};
+
+	guest_lock_component(vm);
+	ret = do_share(&share);
+	guest_unlock_component(vm);
+
+	return ret;
+}
+
+int __pkvm_guest_unshare_ffa(struct pkvm_hyp_vcpu *vcpu, u64 ipa)
+{
+	int ret;
+	struct pkvm_hyp_vm *vm = pkvm_hyp_vcpu_to_hyp_vm(vcpu);
+	struct pkvm_mem_share share = {
+		.tx	= {
+			.nr_pages	= 1,
+			.initiator	= {
+				.id	= PKVM_ID_GUEST,
+				.addr	= ipa,
+				.guest  = {
+					.hyp_vcpu = vcpu,
+				},
+			},
+			.completer	= {
+				.id	= PKVM_ID_FFA,
+			},
+		},
+	};
+
+	guest_lock_component(vm);
+	ret = do_unshare(&share);
+	guest_unlock_component(vm);
+
+	return ret;
+}
+
 void hyp_poison_page(phys_addr_t phys)
 {
 	void *addr = hyp_fixmap_map(phys);
@@ -1930,6 +2104,10 @@ int __pkvm_host_reclaim_page(struct pkvm_hyp_vm *vm, u64 pfn, u64 ipa)
 	phys_addr_t phys = hyp_pfn_to_phys(pfn);
 	kvm_pte_t pte;
 	int ret;
+	u64 hyp_va;
+	struct kvm_s2_mmu *mmu;
+	struct kvm_vmid *kvm_vmid;
+	u64 vmid;
 
 	host_lock_component();
 	guest_lock_component(vm);
@@ -1959,7 +2137,56 @@ int __pkvm_host_reclaim_page(struct pkvm_hyp_vm *vm, u64 pfn, u64 ipa)
 		WARN_ON(__host_check_page_state_range(phys, PAGE_SIZE, PKVM_PAGE_SHARED_OWNED));
 		break;
 	case PKVM_PAGE_SHARED_OWNED:
-		WARN_ON(__host_check_page_state_range(phys, PAGE_SIZE, PKVM_PAGE_SHARED_BORROWED));
+		/* TODO: We need a mechanism that can tell us with whom was
+		 *       the page shared with. After we determine this we should
+		 *       do:
+		 * host -> do __host_check_page_state_range
+		 * hyp  -> unshare the page with the hyp
+		 *         if the page is shared with the hyp and is part of
+		 *         the non_secure_el1_buffers, clear its entry.
+		 *
+		 * secure os -> Ask the secure OS to politely return the
+		 *              shared page and unmap it. This should probably
+		 *              be part of the FFA standard.
+		 *
+		 * For the moment we just verify if our beloved page
+		 * was shared with the host, hyp or secure os. If we fail
+		 * to find it in either of this, something might be terrible
+		 * wrong.
+		 */
+		ret = __host_check_page_state_range(phys, PAGE_SIZE,
+						    PKVM_PAGE_SHARED_BORROWED);
+		if (ret != 0) {
+
+			/* Verify if the page is shared with the hyp */
+			hyp_lock_component();
+			hyp_va = (u64)__hyp_va(phys);
+			ret = __hyp_check_page_state_range(hyp_va, PAGE_SIZE,
+							   PKVM_PAGE_SHARED_BORROWED);
+			if (ret != 0) {
+				/* Verify if the page is shared with secure */
+
+				/* TODO: ask secure os to release shared memory
+				 * from guest.
+				 */
+				ret = 0;
+			} else {
+				mmu = &vm->kvm.arch.mmu;
+				kvm_vmid = &mmu->vmid;
+				vmid = atomic64_read(&kvm_vmid->id);
+
+				hyp_unlock_component();
+				guest_unlock_component(vm);
+
+				hyp_ffa_release_buffers(vm->vcpus[0], vmid,
+							(void *)hyp_va);
+
+				guest_lock_component(vm);
+				hyp_lock_component();
+				kvm_pgtable_hyp_unmap(&pkvm_pgtable, hyp_va, PAGE_SIZE);
+			}
+			hyp_unlock_component();
+		}
 		break;
 	default:
 		BUG_ON(1);
