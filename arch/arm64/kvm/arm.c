@@ -26,6 +26,7 @@
 
 #define CREATE_TRACE_POINTS
 #include "trace_arm.h"
+#include "hyp_trace.h"
 
 #include <linux/uaccess.h>
 #include <asm/archrandom.h>
@@ -2479,6 +2480,8 @@ static int __init init_hyp_mode(void)
 
 	kvm_hyp_init_symbols();
 
+	hyp_trace_init_events();
+
 	if (is_protected_kvm_enabled()) {
 		if (IS_ENABLED(CONFIG_ARM64_PTR_AUTH_KERNEL) &&
 		    cpus_have_const_cap(ARM64_HAS_ADDRESS_AUTH))
@@ -2611,6 +2614,10 @@ static __init int kvm_arm_init(void)
 		err = init_hyp_mode();
 		if (err)
 			goto out_err;
+
+		err = hyp_trace_init_tracefs();
+		if (err)
+			kvm_err("Failed to initialize Hyp tracing\n");
 	}
 
 	err = kvm_init_vector_slots();

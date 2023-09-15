@@ -1,0 +1,204 @@
+#!/bin/sh -e
+
+log_and_die()
+{
+    echo "$1"
+
+    exit 1
+}
+
+host_clock()
+{
+    # BOOTTIME clock
+    awk '{print $1}' /proc/uptime
+}
+
+goto_hyp_trace()
+{
+    if [ -d "/sys/kernel/debug/tracing/hyp" ]; then
+        cd /sys/kernel/debug/tracing/hyp
+        return
+    fi
+
+    if [ -d "/sys/kernel/tracing/hyp" ]; then
+        cd /sys/kernel/debug/tracing/hyp
+        return
+    fi
+
+    echo "ERROR: hyp tracing folder not found!"
+
+    exit 1
+}
+
+reset_hyp_trace()
+{
+    echo 0 > tracing_on
+    echo 0 > trace
+    for event in events/hyp/*; do
+        echo 0 > $event/enable
+    done
+}
+
+setup_hyp_trace()
+{
+    [ -d "/sys/kernel/debug" ] \
+        || log_and_die "debugfs not found"
+
+    goto_hyp_trace
+
+    reset_hyp_trace
+
+    echo 16 > buffer_size_kb
+    echo 1 > events/hyp/selftest/enable
+    echo 1 > tracing_on
+}
+
+stop_hyp_trace()
+{
+    echo 0 > tracing_on
+}
+
+write_events()
+{
+    local num="$1"
+    local func="$2"
+
+    for i in $(seq 1 $num); do
+        # Currently limited to a single CPU as we know the trace_pipe for all
+        # CPUs might produce out of order events.
+        taskset -a "$(echo $((1 << 0)))" echo 1 > /sys/kernel/debug/pkvm_selftest_event
+        [ -z "$func" -o $i -eq $num ] || eval $func
+    done
+}
+
+non_consuming_read()
+{
+    local output=$1
+
+    cat trace > $output
+}
+
+consuming_read()
+{
+    local output=$1
+
+    nohup cat trace_pipe > $output &
+
+    echo $!
+}
+
+run_test_non_consuming()
+{
+    local nr_events=$1
+    local func=$2
+    local tmp="$(mktemp)"
+    local start_ts=0
+    local end_ts=0
+
+    echo "Output trace file: $tmp"
+
+    setup_hyp_trace
+
+    start_ts=$(host_clock)
+    write_events $nr_events $func
+    stop_hyp_trace
+    end_ts=$(host_clock)
+
+    non_consuming_read $tmp
+    validate_test $tmp $nr_events $start_ts $end_ts
+    ret=$?
+
+    rm $tmp
+}
+
+run_test_consuming()
+{
+    local nr_events=$1
+    local func=$2
+    local tmp="$(mktemp)"
+    local start_ts=0
+    local end_ts=0
+    local pid=0
+
+    echo "Output trace file: $tmp"
+
+    setup_hyp_trace
+    pid=$(consuming_read $tmp)
+
+    start_ts=$(host_clock)
+    write_events $nr_events $func
+    stop_hyp_trace
+    end_ts=$(host_clock)
+
+    kill $pid
+    validate_test $tmp $nr_events $start_ts $end_ts
+
+    rm $tmp
+}
+
+validate_test()
+{
+    local output=$1
+    local expected_events=$2
+    local start_ts=$3
+    local end_ts=$4
+    local prev_ts=$3
+    local ts=0
+    local num_events=0
+
+    IFS=$'\n'
+    for line in $(cat $output); do
+        echo "$line" | grep -q -E "^# " && continue
+        ts=$(echo "$line" | awk '{print $2}' | cut -d ':' -f1)
+        if [ $(echo "$ts<$prev_ts" | bc) -eq 1 ]; then
+            log_and_die "Error event @$ts < $prev_ts"
+        fi
+        prev_ts=$ts
+        num_events=$((num_events + 1))
+    done
+
+    if [ $(echo "$ts>$end_ts" | bc) -eq 1 ]; then
+        log_and_die "Error event @$ts > $end_ts"
+    fi
+
+    if [ $num_events -ne $expected_events ]; then
+        log_and_die "Expected $expected_events events, got $num_events"
+    fi
+}
+
+test_base()
+{
+    echo "Test consuming read..."
+
+    run_test_consuming 1000
+
+    echo "done."
+}
+
+test_extended_ts()
+{
+    echo "Test Extended timestamp..."
+
+    run_test_consuming 1000 "sleep 0.1"
+
+    echo "done."
+}
+
+__suspend()
+{
+    echo +10 > /sys/class/rtc/rtc0/wakealarm
+    echo mem > /sys/power/state
+}
+
+test_suspend()
+{
+    echo "Test suspend..."
+
+    run_test_consuming 2 "__suspend"
+
+    echo "done."
+}
+
+test_base
+#test_extended_ts
+#test_suspend
