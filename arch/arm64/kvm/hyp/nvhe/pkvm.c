@@ -656,6 +656,7 @@ static int init_pkvm_hyp_vcpu(struct pkvm_hyp_vcpu *hyp_vcpu,
 	hyp_vcpu->vcpu.arch.cflags = READ_ONCE(host_vcpu->arch.cflags);
 	hyp_vcpu->vcpu.arch.mp_state.mp_state = mp_state;
 	hyp_vcpu->vcpu.arch.hyp_reqs->type = KVM_HYP_REQ_END;
+	hyp_vcpu->vcpu.arch.debug_ptr = &host_vcpu->arch.vcpu_debug_state;
 
 	pkvm_vcpu_init_features_from_host(hyp_vcpu);
 
