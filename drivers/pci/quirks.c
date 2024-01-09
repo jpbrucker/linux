@@ -6223,3 +6223,12 @@ static void pci_fixup_d3cold_delay_1sec(struct pci_dev *pdev)
 	pdev->d3cold_delay = 1000;
 }
 DECLARE_PCI_FIXUP_FINAL(0x5555, 0x0004, pci_fixup_d3cold_delay_1sec);
+
+/*
+ * HACK: Current FVP model doesn't have ACS in the right places
+ */
+static void quirk_arm_smmute_pasid(struct pci_dev *pdev)
+{
+	pdev->pasid_no_acs = 1;
+}
+DECLARE_PCI_FIXUP_FINAL(0x13b5, 0xff80, quirk_arm_smmute_pasid);
