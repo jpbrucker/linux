@@ -82,6 +82,29 @@ void __init arm64_rsi_setup_memory(void)
 	}
 }
 
+/*
+ * Convert a range of IPAs from EMPTY to RAM
+ */
+int arm64_rsi_add_memory(phys_addr_t start, phys_addr_t end)
+{
+	if (!is_realm_world())
+		return 0;
+
+	return rsi_set_memory_range_protected(start, end);
+}
+
+/*
+ * Convert a range of IPAs from RAM to EMPTY. The pages will be wiped by
+ * UNDELEGATE before being returned to the host.
+ */
+int arm64_rsi_remove_memory(phys_addr_t start, phys_addr_t end)
+{
+	if (!is_realm_world())
+		return 0;
+
+	return rsi_set_memory_range_shared(start, end);
+}
+
 void __init arm64_rsi_init(void)
 {
 	/*

@@ -40,6 +40,7 @@
 #include <asm/tlbflush.h>
 #include <asm/pgalloc.h>
 #include <asm/kfence.h>
+#include <asm/rsi.h>
 
 #define NO_BLOCK_MAPPINGS	BIT(0)
 #define NO_CONT_MAPPINGS	BIT(1)
@@ -1340,6 +1341,10 @@ int arch_add_memory(int nid, u64 start, u64 size,
 
 	VM_BUG_ON(!mhp_range_allowed(start, size, true));
 
+	ret = arm64_rsi_add_memory(start, start + size);
+	if (ret)
+		return ret;
+
 	if (can_set_direct_map())
 		flags |= NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
 
@@ -1351,10 +1356,11 @@ int arch_add_memory(int nid, u64 start, u64 size,
 
 	ret = __add_pages(nid, start >> PAGE_SHIFT, size >> PAGE_SHIFT,
 			   params);
-	if (ret)
+	if (ret) {
 		__remove_pgd_mapping(swapper_pg_dir,
 				     __phys_to_virt(start), size);
-	else {
+		WARN_ON(arm64_rsi_remove_memory(start, start + size));
+	} else {
 		max_pfn = PFN_UP(start + size);
 		max_low_pfn = max_pfn;
 	}
@@ -1369,6 +1375,7 @@ void arch_remove_memory(u64 start, u64 size, struct vmem_altmap *altmap)
 
 	__remove_pages(start_pfn, nr_pages, altmap);
 	__remove_pgd_mapping(swapper_pg_dir, __phys_to_virt(start), size);
+	WARN_ON(arm64_rsi_remove_memory(start, start + size));
 }
 
 /*

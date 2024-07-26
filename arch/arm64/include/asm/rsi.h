@@ -13,6 +13,8 @@ DECLARE_STATIC_KEY_FALSE(rsi_present);
 
 void __init arm64_rsi_init(void);
 void __init arm64_rsi_setup_memory(void);
+int arm64_rsi_add_memory(phys_addr_t start, phys_addr_t end);
+int arm64_rsi_remove_memory(phys_addr_t start, phys_addr_t end);
 static inline bool is_realm_world(void)
 {
 	return static_branch_unlikely(&rsi_present);
