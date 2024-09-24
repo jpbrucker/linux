@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/security/cc-event-log.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Confidential Computing Event Log
+
+maintainer: Jean-Philippe Brucker <jean-philippe@linaro.org>
+
+description: |
+  Provide the location in RAM of a confidential computing event log. 
+
+  Firmware and OS running in confidential computing environments can measure
+  software components such as OS images or device tree, and add the result to
+  measurement registers, for example REM on Arm CCA or RTMR on Intel TDX,
+  similarly to Platform Configuration Registers (PCR) on TPMs.  These
+  architectures also provide measurements of the initial machine state,
+  respectively RIM and MRTD.
+
+  An event log describes the measurements that were added to these registers,
+  allowing an external verifier to reproduce the measurements and obtain the
+  same values, confirming that the right payloads were loaded during boot. The
+  content and encoding of the log is platform-specific. It can for instance
+  follow the TCG TPM2 format [1], to be compatible with existing EFI
+  implementations.
+
+  [1] https://trustedcomputinggroup.org/resource/pc-client-specific-platform-firmware-profile-specification/
+
+properties:
+  compatible:
+    const: cc-event-log
+
+  reg:
+    maxItems: 1
+    description: |
+      Base address and size of the event log
+
+required:
+  - compatible
+  - reg
+
+examples:
+  - |
+    reserved-memory {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges;
+
+        event-log@80200000 {
+            compatible = "cc-event-log";
+            reg = <0x80200000 0x10000>;
+        }
+    }
