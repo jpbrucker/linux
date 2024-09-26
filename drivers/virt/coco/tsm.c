@@ -5,6 +5,9 @@
 
 #include <linux/tsm.h>
 #include <linux/err.h>
+#include <linux/kobject.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/slab.h>
 #include <linux/rwsem.h>
 #include <linux/string.h>
@@ -17,6 +20,12 @@ static struct tsm_provider {
 	void *data;
 } provider;
 static DECLARE_RWSEM(tsm_rwsem);
+
+struct tsm_ccel_file {
+	struct bin_attribute attr;
+	void *base;
+	size_t size;
+};
 
 /**
  * DOC: Trusted Security Module (TSM) Attestation Report Interface
@@ -448,6 +457,99 @@ static struct configfs_subsystem tsm_configfs = {
 	.su_mutex = __MUTEX_INITIALIZER(tsm_configfs.su_mutex),
 };
 
+static struct kobject *tsm_kobj;
+static struct tsm_ccel_file *ccel_file;
+
+static ssize_t tsm_ccel_read(struct file *filp, struct kobject *kobj,
+			     struct bin_attribute *bin_attr, char *buf,
+			     loff_t pos, size_t count)
+{
+	struct tsm_ccel_file *ccel_file;
+	size_t size = bin_attr->size;
+
+	ccel_file = container_of(bin_attr, struct tsm_ccel_file, attr);
+
+	memcpy(buf, ccel_file->base + pos, count);
+
+	return count;
+}
+
+static int __init tsm_ccel_create_bin_file(phys_addr_t paddr, size_t size)
+{
+	int rc;
+
+	ccel_file = kzalloc(sizeof(*ccel_file), GFP_KERNEL);
+	if (!ccel_file)
+		return -ENOMEM;
+
+	sysfs_attr_init(&ccel_file->attr.attr);
+	*ccel_file = (struct tsm_ccel_file) {
+		.base		= __va(paddr),
+		.attr.size	= size,
+		.attr.attr.name	= "ccel",
+		.attr.attr.mode	= S_IRUSR,
+		.attr.read	= tsm_ccel_read,
+	};
+
+	rc = sysfs_create_bin_file(tsm_kobj, &ccel_file->attr);
+	if (rc) {
+		kfree(ccel_file);
+		ccel_file = NULL;
+	}
+
+	return rc;
+}
+
+static void __exit tsm_ccel_remove_bin_file(void)
+{
+	if (!ccel_file)
+		return;
+
+	sysfs_remove_bin_file(tsm_kobj, &ccel_file->attr);
+	kfree(ccel_file);
+	ccel_file = NULL;
+}
+
+static void tsm_ccel_get_of(void)
+{
+	u64 addr, size;
+	const __be32 *reg;
+	struct device_node *node;
+
+	node = of_find_compatible_node(NULL, NULL, "cc-event-log");
+	if (!node)
+		return;
+
+	reg = of_get_address(node, 0, &size, NULL);
+	if (!reg) {
+		pr_warn("cc-event-log does not contain a 'reg' property\n");
+		goto out_put_node;
+	}
+
+	addr = of_translate_address(node, reg);
+	if (addr == OF_BAD_ADDR) {
+		pr_warn("cc-event-log: unable to translate address\n");
+		goto out_put_node;
+	}
+
+	/*
+	 * TODO: we're just passing on to userspace whatever the untrusted host
+	 * provided, and it's unmeasured.
+	 *
+	 * Do we need to check that the content is a valid log?  That its size
+	 * is within some reasonable bounds?  That the log is indeed in RAM and
+	 * the linear map?  I think no, no, yes.
+	 *
+	 * Zeroing the log is the VMM's job. It might be useful to shrink the
+	 * log so userspace doesn't have to read several MBs, but we don't know
+	 * how many zeroes at the end are actually part of the log.
+	 */
+	tsm_ccel_create_bin_file(addr, size);
+
+out_put_node:
+	of_node_put(node);
+}
+
 int tsm_register(const struct tsm_ops *ops, void *priv)
 {
 	const struct tsm_ops *conflict;
@@ -492,17 +594,34 @@ static int __init tsm_init(void)
 	tsm = configfs_register_default_group(root, "report",
 					      &tsm_reports_type);
 	if (IS_ERR(tsm)) {
-		configfs_unregister_subsystem(&tsm_configfs);
-		return PTR_ERR(tsm);
+		rc = PTR_ERR(tsm);
+		goto err_unregister_subsystem;
 	}
+
+	tsm_kobj = kobject_create_and_add("tsm", kernel_kobj);
+	if (!tsm_kobj) {
+		rc = -EINVAL;
+		goto err_unregister_group;
+	}
+
 	tsm_report_group = tsm;
 
+	tsm_ccel_get_of();
+
 	return 0;
+
+err_unregister_group:
+	configfs_unregister_default_group(tsm_report_group);
+err_unregister_subsystem:
+	configfs_unregister_subsystem(&tsm_configfs);
+	return rc;
 }
 module_init(tsm_init);
 
 static void __exit tsm_exit(void)
 {
+	tsm_ccel_remove_bin_file();
+	kobject_put(tsm_kobj);
 	configfs_unregister_default_group(tsm_report_group);
 	configfs_unregister_subsystem(&tsm_configfs);
 }
